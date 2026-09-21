@@ -143,6 +143,7 @@ def test_journal_rules_and_generation_flow(tmp_path):
 
     pdf_download = client.get(f"/api/documents/{doc_id}/download/pdf")
     assert pdf_download.status_code == 200
+<<<<<<< HEAD
 
 
 def test_ai_quality_and_report_endpoints(tmp_path):
@@ -260,3 +261,5 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
     assert 0.0 <= empty_body["score"] <= 1.0
     assert isinstance(empty_body["relevant_topics"], list)
     assert isinstance(empty_body["scope_gaps"], list)
+=======
+>>>>>>> 7824d8913e2157f6ebc06f3a0d20be405780bfa0

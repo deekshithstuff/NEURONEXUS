@@ -2,6 +2,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, options)
+<<<<<<< HEAD
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try {
@@ -13,6 +14,9 @@ async function request(path, options = {}) {
     }
     throw new Error(message)
   }
+=======
+  if (!response.ok) throw new Error(`Request failed (${response.status})`)
+>>>>>>> 7824d8913e2157f6ebc06f3a0d20be405780bfa0
   const type = response.headers.get('content-type') || ''
   return type.includes('application/json') ? response.json() : response.blob()
 }
@@ -24,7 +28,11 @@ export const researchApi = {
     return request('/api/documents/upload', { method: 'POST', body })
   },
   getDocument: (id) => request(`/api/documents/${id}`),
+<<<<<<< HEAD
   analyzeDocument: (id, payload = {}) => request(`/api/documents/${id}/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+=======
+  analyzeDocument: (id) => request(`/api/documents/${id}/analyze`, { method: 'POST' }),
+>>>>>>> 7824d8913e2157f6ebc06f3a0d20be405780bfa0
   getStructure: (id) => request(`/api/documents/${id}/structure`),
   checkCitations: (document) => request('/api/citations/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(document) }),
   getCitations: (id) => request(`/api/citations/${id}`),
