@@ -1,0 +1,40 @@
+{
+  "by_category": {
+    "01_valid_complete": {
+      "ok": 10,
+      "fail": 0
+    },
+    "02_citation_issues": {
+      "ok": 10,
+      "fail": 0
+    },
+    "03_structure_issues": {
+      "ok": 10,
+      "fail": 0
+    },
+    "04_methodology_quality": {
+      "ok": 10,
+      "fail": 0
+    },
+    "05_journal_scope": {
+      "ok": 10,
+      "fail": 0
+    },
+    "06_writing_quality": {
+      "ok": 10,
+      "fail": 0
+    },
+    "07_formatting": {
+      "ok": 10,
+      "fail": 0
+    },
+    "08_tables_figures_equations": {
+      "ok": 10,
+      "fail": 0
+    },
+    "09_edge_cases": {
+      "ok": 10,
+      "fail": 0
+    }
+  }
+}

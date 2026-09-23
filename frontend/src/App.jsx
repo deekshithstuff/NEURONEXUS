@@ -16,7 +16,6 @@ import {
   MoreHorizontal,
   PanelLeft,
   Plus,
-  Search,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -166,23 +165,28 @@ function App() {
       const uploaded = await researchApi.uploadDocument(file)
       const articleId = uploaded.document_id
       const analyzed = await researchApi.analyzeDocument(articleId, { journal_id: selectedJournalId })
-      const structure = await researchApi.getStructure(articleId)
-      setDocument({ ...defaultAnalysis, ...structure, document_id: articleId, title: structure.title || defaultAnalysis.title })
+      const analysisPayload = { ...defaultAnalysis, ...analyzed, document_id: articleId }
+      setDocument(analysisPayload)
       const citationData = await researchApi.getCitations(articleId)
       setCitationReport(citationData)
       setActive('analysis')
       setStatusMessage('Document uploaded, parsed, and analyzed successfully.')
 
-      const [quality, novelty, methodology, contribution, journal, writing, improvement, reportDetails] = await Promise.all([
-        researchApi.analyze('quality', { document_id: articleId, analysis: structure }),
-        researchApi.analyze('novelty', { document_id: articleId, analysis: structure }),
-        researchApi.analyze('methodology', { document_id: articleId, analysis: structure }),
-        researchApi.analyze('contribution', { document_id: articleId, analysis: structure }),
-        researchApi.matchJournal({ document_id: articleId, analysis: structure, journal_id: selectedJournalId }),
-        researchApi.analyze('writing', { document_id: articleId, analysis: structure }),
-        researchApi.generateImprovement({ document_id: articleId, analysis: structure, focus: 'research quality' }),
-        researchApi.generateReport({ document_id: articleId, analysis: structure, quality_analysis: quality, selected_journal: selectedJournalId }),
+      const [quality, novelty, methodology, contribution, journal, writing, improvement] = await Promise.all([
+        researchApi.analyze('quality', { document_id: articleId, analysis: analysisPayload }),
+        researchApi.analyze('novelty', { document_id: articleId, analysis: analysisPayload }),
+        researchApi.analyze('methodology', { document_id: articleId, analysis: analysisPayload }),
+        researchApi.analyze('contribution', { document_id: articleId, analysis: analysisPayload }),
+        researchApi.matchJournal({ document_id: articleId, analysis: analysisPayload, journal_id: selectedJournalId }),
+        researchApi.analyze('writing', { document_id: articleId, analysis: analysisPayload }),
+        researchApi.generateImprovement({ document_id: articleId, analysis: analysisPayload, focus: 'research quality' }),
       ])
+      const reportDetails = await researchApi.generateReport({
+        document_id: articleId,
+        analysis: analysisPayload,
+        quality_analysis: quality,
+        selected_journal: selectedJournalId,
+      })
 
       setQualityAnalysis(quality)
       setNoveltyAnalysis(novelty)
@@ -309,10 +313,12 @@ function App() {
           {active === 'citations' && <CitationPage citationReport={citationReport} document={document} setActive={setActive} />}
           {active === 'journal' && (
             <JournalPage
+              document={document}
               selectedJournalId={selectedJournalId}
               setSelectedJournalId={setSelectedJournalId}
               journalList={journalList}
               journalMatch={journalMatch}
+              setJournalMatch={setJournalMatch}
               setActive={setActive}
             />
           )}
@@ -321,7 +327,14 @@ function App() {
           {active === 'methodology' && <MethodologyPage methodologyAnalysis={methodologyAnalysis} setActive={setActive} />}
           {active === 'improvements' && <ImprovementsPage improvements={improvements} setActive={setActive} />}
           {active === 'report' && <ReportPage report={report} setActive={setActive} />}
-          {active === 'export' && <ExportPage document={document} selectedJournal={selectedJournal} setActive={setActive} />}
+          {active === 'export' && (
+            <ExportPage
+              document={document}
+              selectedJournal={selectedJournal}
+              selectedJournalId={selectedJournalId}
+              setActive={setActive}
+            />
+          )}
         </div>
       </main>
     </div>
@@ -569,21 +582,19 @@ function CitationPage({ citationReport, document, setActive }) {
 
         <section className="panel">
           <div className="panel-heading">
-            <div><p className="kicker">EXAMPLE</p><h2>Reference review</h2></div>
+            <div><p className="kicker">BIBLIOGRAPHY</p><h2>Detected references</h2></div>
           </div>
           <div className="finding-list">
-            <div className="finding">
-              <span className="finding-mark warning">!</span>
-              <div><strong>Citation [12]</strong><span>Missing corresponding reference</span></div>
-            </div>
-            <div className="finding">
-              <span className="finding-mark warning">!</span>
-              <div><strong>Reference [8]</strong><span>Not cited in manuscript</span></div>
-            </div>
-            <div className="finding">
-              <span className="finding-mark neutral">•</span>
-              <div><strong>Reference [17]</strong><span>Duplicate entry detected</span></div>
-            </div>
+            {(document.references || []).length === 0 ? (
+              <div className="finding"><span className="finding-mark neutral">•</span><div><strong>No references detected</strong><span>Upload and analyze a manuscript to populate this list.</span></div></div>
+            ) : (
+              (document.references || []).slice(0, 8).map((ref) => (
+                <div className="finding" key={ref.id || ref.raw_text}>
+                  <span className="finding-mark good"><Check size={14} /></span>
+                  <div><strong>[{ref.id}]</strong><span>{ref.raw_text}</span></div>
+                </div>
+              ))
+            )}
           </div>
         </section>
       </div>
@@ -591,8 +602,22 @@ function CitationPage({ citationReport, document, setActive }) {
   )
 }
 
-function JournalPage({ selectedJournalId, setSelectedJournalId, journalList, journalMatch, setActive }) {
-  const handleSelect = (event) => setSelectedJournalId(event.target.value)
+function JournalPage({ document, selectedJournalId, setSelectedJournalId, journalList, journalMatch, setJournalMatch, setActive }) {
+  const handleSelect = async (event) => {
+    const nextJournal = event.target.value
+    setSelectedJournalId(nextJournal)
+    if (!document?.document_id || document.document_id === 'DOC-001') return
+    try {
+      const match = await researchApi.matchJournal({
+        document_id: document.document_id,
+        analysis: document,
+        journal_id: nextJournal,
+      })
+      setJournalMatch(match)
+    } catch {
+      // Keep the previous match if the live lookup fails.
+    }
+  }
 
   return (
     <>
@@ -807,7 +832,51 @@ function ReportPage({ report, setActive }) {
   )
 }
 
-function ExportPage({ document, selectedJournal, setActive }) {
+function ExportPage({ document, selectedJournal, selectedJournalId, setActive }) {
+  const [exportStatus, setExportStatus] = useState('idle')
+  const [exportMessage, setExportMessage] = useState('Format and generate the journal-aligned submission package.')
+  const [exportError, setExportError] = useState('')
+
+  const runExport = async () => {
+    if (!document?.document_id || document.document_id === 'DOC-001') {
+      setExportError('Upload and analyze a manuscript before exporting.')
+      return
+    }
+    setExportError('')
+    setExportStatus('working')
+    setExportMessage('Applying journal template and building submission package...')
+    try {
+      await researchApi.formatDocument(document.document_id, { journal_id: selectedJournalId })
+      await researchApi.generateDocument(document.document_id, { journal_id: selectedJournalId })
+      setExportStatus('ready')
+      setExportMessage('Submission package is ready. Download DOCX, PDF, or the readiness report.')
+    } catch (error) {
+      setExportStatus('error')
+      setExportError(error.message || 'Export failed.')
+      setExportMessage('Export could not be completed.')
+    }
+  }
+
+  const downloadFile = async (format) => {
+    try {
+      const blob = await researchApi.download(document.document_id, format)
+      const url = URL.createObjectURL(blob)
+      const link = globalThis.document.createElement('a')
+      link.href = url
+      const names = {
+        pdf: 'final_manuscript.pdf',
+        report: 'readiness_report.pdf',
+        zip: 'submission_package.zip',
+        docx: 'final_manuscript.docx',
+      }
+      link.download = names[format] || `manuscript.${format}`
+      link.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setExportError(error.message || `Could not download ${format.toUpperCase()}.`)
+    }
+  }
+
   return (
     <>
       <section className="page-intro">
@@ -820,13 +889,19 @@ function ExportPage({ document, selectedJournal, setActive }) {
       </section>
       <section className="panel export-panel">
         <div className="panel-heading"><div><p className="kicker">OUTPUT</p><h2>Publication package</h2></div></div>
-        <div className="status-box success-box">
-          <strong>Ready for export</strong>
+        <div className={exportStatus === 'ready' ? 'status-box success-box' : 'status-box'}>
+          <strong>{exportStatus === 'working' ? 'Generating...' : exportStatus === 'ready' ? 'Ready for export' : 'Generate outputs'}</strong>
+          <p>{exportError || exportMessage}</p>
           <p>Manuscript: {document.title} · Journal: {selectedJournal?.journal_name || 'Nature'}</p>
         </div>
         <div className="button-row export-buttons">
-          <button type="button" className="primary-button">Download DOCX</button>
-          <button type="button" className="outline-button">Download PDF</button>
+          <button type="button" className="primary-button" onClick={runExport} disabled={exportStatus === 'working'}>
+            {exportStatus === 'ready' ? 'Regenerate package' : 'Generate submission package'}
+          </button>
+          <button type="button" className="outline-button" onClick={() => downloadFile('docx')} disabled={exportStatus !== 'ready'}>Download DOCX</button>
+          <button type="button" className="outline-button" onClick={() => downloadFile('pdf')} disabled={exportStatus !== 'ready'}>Download PDF</button>
+          <button type="button" className="outline-button" onClick={() => downloadFile('report')} disabled={exportStatus !== 'ready'}>Readiness report</button>
+          <button type="button" className="outline-button" onClick={() => downloadFile('zip')} disabled={exportStatus !== 'ready'}>Submission ZIP</button>
         </div>
       </section>
     </>

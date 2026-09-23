@@ -5,10 +5,7 @@ from collections.abc import AsyncIterator
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-<<<<<<< HEAD
 from backend.api.ai import router as ai_router
-=======
->>>>>>> 7824d8913e2157f6ebc06f3a0d20be405780bfa0
 from backend.api.documents import router as documents_router
 from backend.api.citations import router as citations_router
 from backend.api.generation import router as generation_router
@@ -34,14 +31,9 @@ app.add_middleware(
 
 app.include_router(documents_router)
 app.include_router(citations_router)
-<<<<<<< HEAD
 app.include_router(journals_router)
 app.include_router(ai_router)
 app.include_router(generation_router)
-=======
-app.include_router(generation_router)
-app.include_router(journals_router)
->>>>>>> 7824d8913e2157f6ebc06f3a0d20be405780bfa0
 
 
 @app.get("/health")

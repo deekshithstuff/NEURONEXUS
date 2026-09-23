@@ -1,7 +1,6 @@
 import json
-from pathlib import Path
 
-from backend.database import fetch_all, fetch_one, connection
+from backend.database import connection
 
 JOURNAL_LIBRARY = {
     "nature": {
@@ -25,7 +24,6 @@ JOURNAL_LIBRARY = {
         "equation_rules": {"preserve_xml": True},
         "numbering_rules": {"bibliography": True},
         "word_limit": 4000,
-<<<<<<< HEAD
         "scope_topics": [
             "general science",
             "biomedical research",
@@ -55,8 +53,6 @@ JOURNAL_LIBRARY = {
             "interdisciplinary science": ["smart systems", "cross-disciplinary", "applied ai", "data-driven discovery"],
         },
         "scope_summary": "Nature focuses on high-impact empirical and interdisciplinary science with strong translational and methodological novelty.",
-=======
->>>>>>> 7824d8913e2157f6ebc06f3a0d20be405780bfa0
     },
     "ieee": {
         "journal_id": "ieee",
@@ -79,7 +75,6 @@ JOURNAL_LIBRARY = {
         "equation_rules": {"preserve_xml": True},
         "numbering_rules": {"section": True},
         "word_limit": 6000,
-<<<<<<< HEAD
         "scope_topics": [
             "iot",
             "smart irrigation",
@@ -112,8 +107,6 @@ JOURNAL_LIBRARY = {
             "machine learning": ["machine learning", "deep learning", "ml", "ai"],
         },
         "scope_summary": "IEEE emphasizes engineering systems, applied AI, sensors, embedded systems, and computational methods with technical implementations.",
-=======
->>>>>>> 7824d8913e2157f6ebc06f3a0d20be405780bfa0
     },
 }
 

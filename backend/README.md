@@ -14,9 +14,9 @@ This backend implements the Half 1 publication engine for DOCX-driven manuscript
 ## Quick start
 
 ```bash
-cd backend
-python -m pip install -r requirements.txt
-uvicorn backend.main:app --reload
+cd <repo-root>
+python -m pip install -r backend/requirements.txt
+python -m uvicorn backend.main:app --reload --port 8000
 ```
 
 ## Main API endpoints
@@ -29,10 +29,20 @@ uvicorn backend.main:app --reload
 - GET /api/citations/{document_id}
 - GET /api/journals
 - GET /api/journals/{journal_id}/rules
+- POST /api/quality/analyze
+- POST /api/novelty/analyze
+- POST /api/methodology/analyze
+- POST /api/contribution/analyze
+- POST /api/writing/analyze
+- POST /api/journal/match
+- POST /api/improvement/generate
+- POST /api/report/generate
 - POST /api/documents/{document_id}/format
 - POST /api/documents/{document_id}/generate
 - GET /api/documents/{document_id}/download/docx
 - GET /api/documents/{document_id}/download/pdf
+- GET /api/documents/{document_id}/download/report
+- GET /api/documents/{document_id}/download/zip
 
 ## Notes
 
