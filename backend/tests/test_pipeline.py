@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import fitz
 from fastapi.testclient import TestClient
 from docx import Document
 
+from backend.generator.pdf_generator import PDFGenerator
 from backend.main import app
 
 client = TestClient(app)
@@ -28,6 +30,24 @@ def build_sample_docx(path: Path) -> None:
     doc.add_paragraph("[2] Brown K. Clinical systems. IEEE TMI 2023.")
     doc.add_paragraph("[3] Jones R. Decision support views. AI Med 2025.")
     doc.save(path)
+
+
+def test_pdf_generator_retries_overflowing_text_without_blank_pages(tmp_path):
+    content = "\n\n".join(
+        ["Manuscript title"]
+        + [f"Section {index}\nA short supporting paragraph." for index in range(100)]
+        + ["End of manuscript."]
+    )
+    output_path = tmp_path / "long_manuscript.pdf"
+
+    PDFGenerator().generate(output_path=output_path, text=content)
+
+    pdf = fitz.open(output_path)
+    page_text = [page.get_text().strip() for page in pdf]
+    assert len(page_text) > 1
+    assert all(page_text)
+    assert "Manuscript title" in page_text[0]
+    assert "End of manuscript." in page_text[-1]
 
 
 def test_upload_and_analysis_flow(tmp_path):

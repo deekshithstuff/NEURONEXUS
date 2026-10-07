@@ -19,16 +19,33 @@ class PDFGenerator:
                 "This PDF is created from the formatted manuscript export and preserves the original research content."
             )
 
-        chunks = self._chunk_text(content, 2800)
         doc = fitz.open()
-        for chunk in chunks:
+        text_position = 0
+        chunk_size = 2800
+        while text_position < len(content):
+            chunk_end = min(text_position + chunk_size, len(content))
+            if chunk_end < len(content):
+                boundary = max(
+                    content.rfind("\n", text_position, chunk_end),
+                    content.rfind(" ", text_position, chunk_end),
+                )
+                if boundary > text_position:
+                    chunk_end = boundary + 1
             page = doc.new_page()
-            page.insert_textbox(
+            remaining_space = page.insert_textbox(
                 fitz.Rect(54, 54, page.rect.width - 54, page.rect.height - 54),
-                chunk,
+                content[text_position:chunk_end],
                 fontsize=11,
                 fontname="helv",
             )
+            if remaining_space < 0:
+                doc.delete_page(doc.page_count - 1)
+                if chunk_size == 1:
+                    raise ValueError("Unable to fit manuscript text on a PDF page.")
+                chunk_size = max(1, chunk_size // 2)
+                continue
+            text_position = chunk_end
+            chunk_size = 2800
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path)
         return str(output_path)
@@ -49,12 +66,3 @@ class PDFGenerator:
                     blocks.append(" | ".join(cells))
         return "\n\n".join(blocks)
 
-    def _chunk_text(self, content: str, size: int) -> list[str]:
-        if len(content) <= size:
-            return [content]
-        chunks: list[str] = []
-        start = 0
-        while start < len(content):
-            chunks.append(content[start:start + size])
-            start += size
-        return chunks

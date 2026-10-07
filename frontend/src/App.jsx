@@ -24,7 +24,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { researchApi } from './services/api'
+import { buildDownloadUrl, researchApi } from './services/api'
 
 const navigation = [
   { label: 'Dashboard', icon: Gauge, id: 'dashboard' },
@@ -859,19 +859,22 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
 
   const downloadFile = async (format) => {
     try {
-      const blob = await researchApi.download(document.document_id, format)
-      const url = URL.createObjectURL(blob)
-      const link = globalThis.document.createElement('a')
-      link.href = url
       const names = {
         pdf: 'final_manuscript.pdf',
         report: 'readiness_report.pdf',
         zip: 'submission_package.zip',
         docx: 'final_manuscript.docx',
       }
-      link.download = names[format] || `manuscript.${format}`
+      const fileName = names[format] || `manuscript.${format}`
+      const url = buildDownloadUrl(document.document_id, format)
+      const link = globalThis.document.createElement('a')
+      link.href = url
+      link.download = fileName
+      link.rel = 'noopener'
+      link.style.display = 'none'
+      globalThis.document.body.appendChild(link)
       link.click()
-      URL.revokeObjectURL(url)
+      setTimeout(() => link.remove(), 1500)
     } catch (error) {
       setExportError(error.message || `Could not download ${format.toUpperCase()}.`)
     }

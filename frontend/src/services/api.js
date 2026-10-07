@@ -1,4 +1,9 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+
+export function buildDownloadUrl(documentId, format) {
+  const root = API_BASE.endsWith('/') ? API_BASE : `${API_BASE}/`
+  return new URL(`/api/documents/${documentId}/download/${format}`, root).toString()
+}
 
 async function request(path, options = {}) {
   const response = await fetch(`${API_BASE}${path}`, options)
