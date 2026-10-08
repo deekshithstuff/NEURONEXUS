@@ -23,6 +23,9 @@ async function request(path, options = {}) {
 }
 
 export const researchApi = {
+  getAiStatus: () => request('/api/ai/status'),
+  getDashboardSummary: () => request('/api/documents/dashboard/summary'),
+  getDocuments: () => request('/api/documents'),
   uploadDocument: (file) => {
     const body = new FormData()
     body.append('file', file)
@@ -31,6 +34,7 @@ export const researchApi = {
   getDocument: (id) => request(`/api/documents/${id}`),
   analyzeDocument: (id, payload = {}) => request(`/api/documents/${id}/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   getStructure: (id) => request(`/api/documents/${id}/structure`),
+  getSavedAnalysis: (id, module) => request(`/api/documents/${id}/analysis/${module}`),
   checkCitations: (document) => request('/api/citations/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(document) }),
   getCitations: (id) => request(`/api/citations/${id}`),
   getJournals: () => request('/api/journals'),

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from io import BytesIO
 
 import fitz
+from PIL import Image
 from fastapi.testclient import TestClient
 from docx import Document
 
 from backend.generator.pdf_generator import PDFGenerator
+from backend.generator.docx_generator import DOCXGenerator
 from backend.main import app
 
 client = TestClient(app)
@@ -50,6 +53,35 @@ def test_pdf_generator_retries_overflowing_text_without_blank_pages(tmp_path):
     assert "End of manuscript." in page_text[-1]
 
 
+def test_docx_formatter_preserves_source_content_and_original(tmp_path):
+    source_path = tmp_path / "source_with_assets.docx"
+    original = Document()
+    original.add_heading("Preserved title", level=1)
+    original.add_paragraph("A paragraph with original text.")
+    original.add_table(rows=1, cols=1).cell(0, 0).text = "Table cell survives"
+    image = Image.new("RGB", (4, 4), color="red")
+    image_bytes = BytesIO()
+    image.save(image_bytes, format="PNG")
+    image_bytes.seek(0)
+    original.add_picture(image_bytes)
+    original.save(source_path)
+    original_bytes = source_path.read_bytes()
+    output_path = tmp_path / "formatted.docx"
+
+    DOCXGenerator().generate(
+        {"title": "Preserved title"},
+        output_path,
+        {"page_size": "A4", "columns": 1, "font": "Arial", "font_size": 10},
+        source_path=source_path,
+    )
+
+    formatted = Document(output_path)
+    assert "A paragraph with original text." in [paragraph.text for paragraph in formatted.paragraphs]
+    assert formatted.tables[0].cell(0, 0).text == "Table cell survives"
+    assert len(formatted.inline_shapes) == 1
+    assert source_path.read_bytes() == original_bytes
+
+
 def test_upload_and_analysis_flow(tmp_path):
     sample_path = tmp_path / "sample.docx"
     build_sample_docx(sample_path)
@@ -61,11 +93,21 @@ def test_upload_and_analysis_flow(tmp_path):
     doc_id = payload["document_id"]
     assert payload["status"] == "uploaded"
 
+    documents = client.get("/api/documents")
+    assert documents.status_code == 200, documents.text
+    listed_document = next(item for item in documents.json()["documents"] if item["document_id"] == doc_id)
+    assert listed_document["filename"] == "sample.docx"
+    assert listed_document["status"] == "uploaded"
+
     analysis = client.post(f"/api/documents/{doc_id}/analyze", json={"journal_id": "nature"})
     assert analysis.status_code == 200, analysis.text
     body = analysis.json()
     assert body["document_id"] == doc_id
     assert body["title"]
+    documents = client.get("/api/documents")
+    listed_document = next(item for item in documents.json()["documents"] if item["document_id"] == doc_id)
+    assert listed_document["title"] == body["title"]
+    assert listed_document["status"] == "analyzed"
     assert len(body["sections"]) >= 3
     assert body["citations"]
     assert body["references"]
@@ -75,6 +117,16 @@ def test_upload_and_analysis_flow(tmp_path):
     report = citations_report.json()
     assert report["total_citations"] >= 1
     assert report["total_references"] >= 1
+
+
+def test_upload_rejects_corrupted_docx_without_storing_it():
+    response = client.post(
+        "/api/documents/upload",
+        files={"file": ("corrupted.docx", b"not a docx archive", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+    )
+
+    assert response.status_code == 400
+    assert "corrupted" in response.json()["detail"].lower()
 
 
 def test_author_year_citations_in_numbered_sections(tmp_path):
@@ -145,12 +197,20 @@ def test_journal_rules_and_generation_flow(tmp_path):
     generate = client.post(f"/api/documents/{doc_id}/generate")
     assert generate.status_code == 200, generate.text
     assert generate.json()["status"] == "generated"
+    assert generate.json()["pdf_rendering"]["status"] == "limited_text_rendering"
+    assert generate.json()["formatting_warnings"]
 
     submission = generate.json()["submission_package"]
     final_docx_path = Path(submission["final_docx"])
     assert final_docx_path.exists()
     assert Path(submission["final_pdf"]).exists()
     assert Path(submission["readiness_report"]).exists()
+    readiness_pdf = fitz.open(submission["readiness_report"])
+    readiness_text = "\n".join(page.get_text() for page in readiness_pdf)
+    assert "Overall readiness:" in readiness_text
+    assert "Dimension scores:" in readiness_text
+    assert "Prioritized recommendations:" in readiness_text
+    assert "does not predict acceptance" in readiness_text
 
     generated_doc = Document(final_docx_path)
     texts = [p.text for p in generated_doc.paragraphs if p.text.strip()]
@@ -204,6 +264,12 @@ def test_ai_quality_and_report_endpoints(tmp_path):
     report = client.post("/api/report/generate", json={"document_id": doc_id, "analysis": analysis.json(), "quality_analysis": quality_body, "selected_journal": "nature"})
     assert report.status_code == 200, report.text
     assert "Pre-Submission Readiness Assessment" in report.json()["title"]
+    saved_quality = client.get(f"/api/documents/{doc_id}/analysis/quality")
+    saved_report = client.get(f"/api/documents/{doc_id}/analysis/readiness_report")
+    assert saved_quality.status_code == 200
+    assert saved_quality.json()["result"]["document_id"] == doc_id
+    assert saved_report.status_code == 200
+    assert saved_report.json()["result"]["overall_readiness"] == report.json()["overall_readiness"]
 
 
 def test_journal_match_uses_real_manuscript_content_and_journal_scope():
@@ -274,6 +340,9 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
     assert "suitable" in a_nature and "suitable" in a_ieee
     assert isinstance(a_nature["suitable"], bool)
     assert isinstance(a_ieee["suitable"], bool)
+    assert a_nature["ranked_journals"]
+    assert "missing_requirements" in a_nature
+    assert a_nature["acceptance_guarantee"] is False
 
     missing = {"title": "", "abstract": "", "keywords": []}
     empty_match = client.post("/api/journal/match", json={"document_id": "DOC-EMPTY", "analysis": missing, "journal_id": "nature"})
@@ -283,4 +352,7 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
     assert 0.0 <= empty_body["score"] <= 1.0
     assert isinstance(empty_body["relevant_topics"], list)
     assert isinstance(empty_body["scope_gaps"], list)
+    assert empty_body["score"] == 0
 
+    unsupported = client.post("/api/journal/match", json={"document_id": "DOC-X", "analysis": manuscript_a, "journal_id": "missing-profile"})
+    assert unsupported.status_code == 404

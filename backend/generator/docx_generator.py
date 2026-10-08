@@ -26,13 +26,22 @@ def _set_run_font(run, font_name: str, font_size: int, bold: bool = False) -> No
 
 
 class DOCXGenerator:
-    def generate(self, document: dict, output_path: str | Path, journal_rules: dict | None = None) -> str:
+    def generate(
+        self,
+        document: dict,
+        output_path: str | Path,
+        journal_rules: dict | None = None,
+        source_path: str | Path | None = None,
+    ) -> str:
         rules = journal_rules or {}
         font_name = rules.get("font") or "Times New Roman"
         font_size = int(rules.get("font_size") or 11)
         line_spacing = float(rules.get("line_spacing") or 1.15)
         paragraph_spacing = int(rules.get("paragraph_spacing") or 6)
         margins = rules.get("margins") or {"top": 1.0, "bottom": 1.0, "left": 1.0, "right": 1.0}
+
+        if source_path is not None:
+            return self._format_source_document(document, output_path, rules, source_path)
 
         doc = Document()
         section = doc.sections[0]
@@ -122,6 +131,52 @@ class DOCXGenerator:
                 self._apply_spacing(para, line_spacing, paragraph_spacing)
                 for run in para.runs:
                     _set_run_font(run, font_name, font_size)
+
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        doc.save(output_path)
+        return str(output_path)
+
+    def _format_source_document(self, analysis: dict, output_path: str | Path, rules: dict, source_path: str | Path) -> str:
+        doc = Document(source_path)
+        font_name = rules.get("font") or "Times New Roman"
+        font_size = int(rules.get("font_size") or 11)
+        line_spacing = float(rules.get("line_spacing") or 1.15)
+        paragraph_spacing = int(rules.get("paragraph_spacing") or 6)
+        margins = rules.get("margins") or {"top": 1.0, "bottom": 1.0, "left": 1.0, "right": 1.0}
+        page_key = str(rules.get("page_size") or "A4").upper()
+        width, height = PAGE_SIZES.get(page_key, PAGE_SIZES["A4"])
+        if str(rules.get("orientation") or "portrait").lower() == "landscape":
+            width, height = height, width
+
+        for section in doc.sections:
+            section.page_width = width
+            section.page_height = height
+            section.top_margin = Inches(float(margins.get("top", 1.0)))
+            section.bottom_margin = Inches(float(margins.get("bottom", 1.0)))
+            section.left_margin = Inches(float(margins.get("left", 1.0)))
+            section.right_margin = Inches(float(margins.get("right", 1.0)))
+            columns = section._sectPr.xpath("./w:cols")
+            if columns:
+                columns[0].set(qn("w:num"), str(max(1, int(rules.get("columns") or 1))))
+
+        title = str(analysis.get("title") or "").strip()
+        for paragraph in doc.paragraphs:
+            paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
+            paragraph.paragraph_format.line_spacing = line_spacing
+            paragraph.paragraph_format.space_after = Pt(paragraph_spacing)
+            if title and paragraph.text.strip() == title:
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            for run in paragraph.runs:
+                is_title = bool(title and paragraph.text.strip() == title)
+                is_heading = bool(paragraph.style and paragraph.style.name.lower().startswith("heading"))
+                _set_run_font(run, font_name, font_size + (4 if is_title else 2 if is_heading else 0), bold=is_title or is_heading or bool(run.bold))
+
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        for run in paragraph.runs:
+                            _set_run_font(run, font_name, font_size, bold=bool(run.bold))
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path)

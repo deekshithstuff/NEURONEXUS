@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS references_table (id TEXT PRIMARY KEY, document_id TE
 CREATE TABLE IF NOT EXISTS journals (id TEXT PRIMARY KEY, name TEXT NOT NULL, payload_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS journal_rules (journal_id TEXT PRIMARY KEY, payload_json TEXT NOT NULL, FOREIGN KEY(journal_id) REFERENCES journals(id));
 CREATE TABLE IF NOT EXISTS generated_documents (id TEXT PRIMARY KEY, document_id TEXT NOT NULL, format TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(document_id) REFERENCES documents(id));
+CREATE TABLE IF NOT EXISTS analysis_results (document_id TEXT NOT NULL, module TEXT NOT NULL, payload_json TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(document_id, module), FOREIGN KEY(document_id) REFERENCES documents(id));
 """
 
 @contextmanager
@@ -61,3 +62,18 @@ def save_json_rows(table: str, document_id: str, rows: list[dict[str, Any]]) -> 
         for index, payload in enumerate(rows, start=1):
             item_id = str(payload.get("id") or payload.get("section_id") or f"{table}-{index}")
             conn.execute(f"INSERT OR REPLACE INTO {table}(id, document_id, payload_json) VALUES (?, ?, ?)", (item_id, document_id, json.dumps(payload)))
+
+
+def save_analysis_result(document_id: str, module: str, payload: dict[str, Any]) -> None:
+    with connection() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS analysis_results ("
+            "document_id TEXT NOT NULL, module TEXT NOT NULL, payload_json TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+            "PRIMARY KEY(document_id, module), FOREIGN KEY(document_id) REFERENCES documents(id))"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO analysis_results(document_id, module, payload_json, updated_at) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+            (document_id, module, json.dumps(payload)),
+        )

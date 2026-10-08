@@ -35,29 +35,26 @@ const navigation = [
   { label: 'Quality', icon: BarChart3, id: 'quality' },
   { label: 'Novelty', icon: Sparkles, id: 'novelty' },
   { label: 'Methodology', icon: ClipboardCheck, id: 'methodology' },
+  { label: 'Contribution', icon: BarChart3, id: 'contribution' },
+  { label: 'Writing', icon: FileText, id: 'writing' },
   { label: 'Improvements', icon: Zap, id: 'improvements' },
   { label: 'Report', icon: ShieldCheck, id: 'report' },
+  { label: 'Formatting', icon: FileText, id: 'formatting' },
   { label: 'Export', icon: FolderOpen, id: 'export' },
 ]
 
 const defaultAnalysis = {
-  document_id: 'DOC-001',
-  title: 'Federated learning for clinical imaging',
-  authors: ['A. Lee', 'B. Patel'],
-  abstract: 'This study evaluates a federated clinical imaging model for decision support with limited labeled data.',
-  keywords: ['federated learning', 'medical imaging', 'clinical AI'],
-  sections: [
-    { heading: 'Abstract', type: 'abstract' },
-    { heading: 'Introduction', type: 'introduction' },
-    { heading: 'Methodology', type: 'methodology' },
-    { heading: 'Results', type: 'results' },
-    { heading: 'References', type: 'references' },
-  ],
-  figures: [{ id: 'Figure 1', caption: 'Model overview' }],
-  tables: [{ id: 'Table 1', content: [['Metric', 'Value']] }],
-  equations: [{ id: 'Equation 1' }],
-  citations: [{ text: '[1]', citation_type: 'numeric', reference_ids: ['1'] }],
-  references: [{ id: '1', raw_text: 'Smith J. et al. Clinical imaging. Nature. 2024.' }],
+  document_id: '',
+  title: '',
+  authors: [],
+  abstract: '',
+  keywords: [],
+  sections: [],
+  figures: [],
+  tables: [],
+  equations: [],
+  citations: [],
+  references: [],
   metadata: {},
 }
 
@@ -78,61 +75,27 @@ function ThemeToggle({ theme, setTheme }) {
 function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('paperpilot-theme') || 'light')
   const [active, setActive] = useState('dashboard')
+  const [showMobileMenu, setShowMobileMenu] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
-  const [selectedJournalId, setSelectedJournalId] = useState('nature')
+  const [selectedJournalId, setSelectedJournalId] = useState(() => localStorage.getItem('paperpilot-journal') || 'nature')
   const [journalList, setJournalList] = useState([])
+  const [dashboardSummary, setDashboardSummary] = useState(null)
+  const [aiStatus, setAiStatus] = useState({ status: 'limited_analysis', message: 'Checking analysis configuration.' })
+  const [manuscripts, setManuscripts] = useState([])
+  const [isLoadingManuscripts, setIsLoadingManuscripts] = useState(true)
+  const [manuscriptError, setManuscriptError] = useState('')
   const [document, setDocument] = useState(defaultAnalysis)
-  const [citationReport, setCitationReport] = useState({
-    total_citations: 1,
-    total_references: 1,
-    missing_references: [],
-    uncited_references: [],
-    duplicate_references: [],
-    numbering_issues: [],
-  })
-  const [qualityAnalysis, setQualityAnalysis] = useState({
-    research_gap: 'The manuscript motivates a clinical-AI problem and outlines a deep-learning approach, but the gap statement should be more explicit.',
-    technical_contribution: 'The work centers on a domain-specific model with evidence of predictive performance.',
-    methodology_issues: ['Dataset provenance and baseline support should be clearer.'],
-    missing_sections: ['related_work'],
-    writing_issues: ['Clarify the contribution statement.'],
-    suggestions: ['Strengthen the gap statement and methodology details.'],
-  })
-  const [noveltyAnalysis, setNoveltyAnalysis] = useState({
-    similar_papers: [{ title: 'Clinical imaging with deep CNNs for decision support', similarity: 0.82, overlap: ['clinical imaging'] }],
-    comparative_summary: 'The manuscript overlaps with recent clinical-AI methods; a stronger differentiation narrative is recommended.',
-    potential_differentiators: ['Dataset specificity', 'Application constraints'],
-  })
-  const [methodologyAnalysis, setMethodologyAnalysis] = useState({
-    detected_information: ['dataset', 'baseline', 'evaluation'],
-    missing_information: ['dataset size', 'experimental setup'],
-    potential_weakness: 'The methodology section would benefit from more reproducibility detail.',
-    actionable_suggestion: 'Add dataset size, splits, baseline models, and hyperparameters.',
-  })
-  const [contributionAnalysis, setContributionAnalysis] = useState({
-    problem: 'The manuscript addresses clinical decision support and model adaptation under limited labels.',
-    research_gap: 'The work closes a gap in generalizable pipeline design for clinical imaging.',
-    contribution: 'The manuscript proposes a practical ML method with domain-specific evaluation.',
-  })
-  const [journalMatch, setJournalMatch] = useState({
-    journal_id: 'nature',
-    score: 0.82,
-    relevant_topics: ['medical imaging', 'clinical AI'],
-    scope_gaps: ['Needs stronger statement of novelty within the journal scope.'],
-    explanation: 'Strong alignment with applied AI and clinical methods, but novelty framing should be clearer.',
-  })
-  const [improvements, setImprovements] = useState({
-    suggestions: [
-      {
-        id: 'improvement-1',
-        original: 'Existing work relies on handcrafted features.',
-        suggested: 'Existing clinical AI pipelines often depend on handcrafted features and limited benchmark coverage, leaving a clear need for a more scalable and generalizable approach.',
-      },
-    ],
-  })
+  const [citationReport, setCitationReport] = useState({ total_citations: 0, total_references: 0 })
+  const [qualityAnalysis, setQualityAnalysis] = useState({})
+  const [noveltyAnalysis, setNoveltyAnalysis] = useState({})
+  const [methodologyAnalysis, setMethodologyAnalysis] = useState({})
+  const [contributionAnalysis, setContributionAnalysis] = useState({})
+  const [writingAnalysis, setWritingAnalysis] = useState({})
+  const [journalMatch, setJournalMatch] = useState({})
+  const [improvements, setImprovements] = useState({ suggestions: [] })
   const [report, setReport] = useState({
     title: 'Pre-Submission Readiness Assessment',
-    summary: 'A transparent assessment of readiness without implying guaranteed publication.',
+    summary: 'Upload or open an analyzed manuscript to calculate readiness.',
     sections: [],
     final_checklist: [],
   })
@@ -146,8 +109,74 @@ function App() {
   }, [theme])
 
   useEffect(() => {
+    localStorage.setItem('paperpilot-journal', selectedJournalId)
+  }, [selectedJournalId])
+
+  const refreshManuscripts = async () => {
+    setIsLoadingManuscripts(true)
+    try {
+      const [body, summary] = await Promise.all([
+        researchApi.getDocuments(),
+        researchApi.getDashboardSummary(),
+      ])
+      setManuscripts(body.documents || [])
+      setDashboardSummary(summary)
+      setManuscriptError('')
+    } catch (error) {
+      setManuscriptError(error.message || 'Could not load manuscripts.')
+    } finally {
+      setIsLoadingManuscripts(false)
+    }
+  }
+
+  useEffect(() => {
+    refreshManuscripts()
     researchApi.getJournals().then((body) => setJournalList(body.journals || [])).catch(() => setJournalList([]))
+    researchApi.getAiStatus().then(setAiStatus).catch(() => setAiStatus({ status: 'limited_analysis', message: 'AI provider status unavailable; local analysis remains active.' }))
   }, [])
+
+  const loadAnalysisModules = async (documentId, analysisPayload) => {
+    const request = { document_id: documentId, analysis: analysisPayload, journal_id: selectedJournalId }
+    const [quality, novelty, methodology, contribution, journal, writing, improvement] = await Promise.all([
+      researchApi.analyze('quality', request),
+      researchApi.analyze('novelty', request),
+      researchApi.analyze('methodology', request),
+      researchApi.analyze('contribution', request),
+      researchApi.matchJournal({ ...request, journal_id: selectedJournalId }),
+      researchApi.analyze('writing', request),
+      researchApi.generateImprovement({ ...request, focus: 'research quality' }),
+    ])
+    const reportDetails = await researchApi.generateReport({
+      ...request,
+      quality_analysis: quality,
+      selected_journal: selectedJournalId,
+    })
+    setQualityAnalysis(quality)
+    setNoveltyAnalysis(novelty)
+    setMethodologyAnalysis(methodology)
+    setContributionAnalysis(contribution)
+    setWritingAnalysis(writing)
+    setJournalMatch(journal)
+    setImprovements(improvement)
+    setReport(reportDetails)
+  }
+
+  const openManuscript = async (documentId) => {
+    setManuscriptError('')
+    try {
+      const record = await researchApi.getDocument(documentId)
+      const analysis = record.analysis || await researchApi.analyzeDocument(documentId, { journal_id: selectedJournalId })
+      const analysisPayload = { ...defaultAnalysis, ...analysis, document_id: documentId, title: analysis.title || record.filename }
+      setDocument(analysisPayload)
+      const citationData = await researchApi.getCitations(documentId)
+      setCitationReport(citationData)
+      await loadAnalysisModules(documentId, analysisPayload)
+      setActive('analysis')
+    } catch (error) {
+      setManuscriptError(error.message || 'Could not open this manuscript.')
+      setActive('manuscripts')
+    }
+  }
 
   const handleFileUpload = async (event) => {
     const file = event.target.files?.[0]
@@ -169,32 +198,11 @@ function App() {
       setDocument(analysisPayload)
       const citationData = await researchApi.getCitations(articleId)
       setCitationReport(citationData)
+      await refreshManuscripts()
       setActive('analysis')
       setStatusMessage('Document uploaded, parsed, and analyzed successfully.')
 
-      const [quality, novelty, methodology, contribution, journal, writing, improvement] = await Promise.all([
-        researchApi.analyze('quality', { document_id: articleId, analysis: analysisPayload }),
-        researchApi.analyze('novelty', { document_id: articleId, analysis: analysisPayload }),
-        researchApi.analyze('methodology', { document_id: articleId, analysis: analysisPayload }),
-        researchApi.analyze('contribution', { document_id: articleId, analysis: analysisPayload }),
-        researchApi.matchJournal({ document_id: articleId, analysis: analysisPayload, journal_id: selectedJournalId }),
-        researchApi.analyze('writing', { document_id: articleId, analysis: analysisPayload }),
-        researchApi.generateImprovement({ document_id: articleId, analysis: analysisPayload, focus: 'research quality' }),
-      ])
-      const reportDetails = await researchApi.generateReport({
-        document_id: articleId,
-        analysis: analysisPayload,
-        quality_analysis: quality,
-        selected_journal: selectedJournalId,
-      })
-
-      setQualityAnalysis(quality)
-      setNoveltyAnalysis(novelty)
-      setMethodologyAnalysis(methodology)
-      setContributionAnalysis(contribution)
-      setJournalMatch(journal)
-      setImprovements(improvement)
-      setReport(reportDetails)
+      await loadAnalysisModules(articleId, analysisPayload)
       setActive('report')
     } catch (error) {
       setUploadError(error.message || 'The upload or analysis request failed.')
@@ -205,15 +213,16 @@ function App() {
   }
 
   const selectedJournal = useMemo(
-    () => journalList.find((item) => item.journal_id === selectedJournalId) || journalList[0] || { journal_name: 'Nature', journal_id: selectedJournalId },
+    () => journalList.find((item) => item.journal_id === selectedJournalId) || journalList[0] || { journal_name: 'No journal selected', journal_id: '' },
     [journalList, selectedJournalId],
   )
 
-  const currentTitle = navigation.find((item) => item.id === active)?.label || 'Dashboard'
+  const currentTitle = navigation.find((item) => item.id === active)?.label
+    || ({ manuscripts: 'All manuscripts', settings: 'Settings' }[active] || 'Dashboard')
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside id="sidebar-navigation" className={showMobileMenu ? 'sidebar mobile-open' : 'sidebar'}>
         <div className="brand">
           <div className="brand-mark">p</div>
           <div>
@@ -238,7 +247,10 @@ function App() {
               type="button"
               key={id}
               className={active === id ? 'nav-item active' : 'nav-item'}
-              onClick={() => setActive(id)}
+              onClick={() => {
+                setActive(id)
+                setShowMobileMenu(false)
+              }}
             >
               <Icon size={17} />
               <span>{label}</span>
@@ -247,11 +259,25 @@ function App() {
         </nav>
 
         <div className="sidebar-bottom">
-          <button type="button" className="nav-item">
+          <button
+            type="button"
+            className={active === 'manuscripts' ? 'nav-item active' : 'nav-item'}
+            onClick={() => {
+              setActive('manuscripts')
+              setShowMobileMenu(false)
+            }}
+          >
             <FolderOpen size={17} />
             <span>All manuscripts</span>
           </button>
-          <button type="button" className="nav-item">
+          <button
+            type="button"
+            className={active === 'settings' ? 'nav-item active' : 'nav-item'}
+            onClick={() => {
+              setActive('settings')
+              setShowMobileMenu(false)
+            }}
+          >
             <Settings2 size={17} />
             <span>Settings</span>
           </button>
@@ -259,16 +285,31 @@ function App() {
             <div className="avatar small">AI</div>
             <div>
               <span>AI services</span>
-              <small className="status-dot">All systems operational</small>
+              <small className="status-dot">{aiStatus.status === 'configured' ? `${aiStatus.provider} enabled` : 'Limited analysis'}</small>
             </div>
             <MoreHorizontal size={17} />
           </div>
         </div>
       </aside>
+      {showMobileMenu && (
+        <button
+          type="button"
+          className="mobile-menu-backdrop"
+          aria-label="Close navigation"
+          onClick={() => setShowMobileMenu(false)}
+        />
+      )}
 
       <main className="main-content">
         <header className="topbar">
-          <button type="button" className="mobile-menu" aria-label="Open menu">
+          <button
+            type="button"
+            className="mobile-menu"
+            aria-label={showMobileMenu ? 'Close menu' : 'Open menu'}
+            aria-controls="sidebar-navigation"
+            aria-expanded={showMobileMenu}
+            onClick={() => setShowMobileMenu(!showMobileMenu)}
+          >
             <PanelLeft size={18} />
           </button>
           <div className="breadcrumbs">
@@ -296,12 +337,37 @@ function App() {
         <div className="page-container">
           {active === 'dashboard' && (
             <Dashboard
-              document={document}
+              manuscripts={manuscripts}
+              dashboardSummary={dashboardSummary}
+              aiStatus={aiStatus}
+              isLoadingManuscripts={isLoadingManuscripts}
+              manuscriptError={manuscriptError}
               setActive={setActive}
+              onOpenManuscript={openManuscript}
               onUpload={handleFileUpload}
               isUploading={isUploading}
               statusMessage={statusMessage}
               uploadError={uploadError}
+            />
+          )}
+
+          {active === 'manuscripts' && (
+            <ManuscriptsPage
+              manuscripts={manuscripts}
+              isLoading={isLoadingManuscripts}
+              error={manuscriptError}
+              onRefresh={refreshManuscripts}
+              onOpen={openManuscript}
+              onUpload={() => setActive('upload')}
+            />
+          )}
+          {active === 'settings' && (
+            <SettingsPage
+              theme={theme}
+              setTheme={setTheme}
+              selectedJournalId={selectedJournalId}
+              setSelectedJournalId={setSelectedJournalId}
+              journalList={journalList}
             />
           )}
 
@@ -325,8 +391,11 @@ function App() {
           {active === 'quality' && <QualityPage qualityAnalysis={qualityAnalysis} setActive={setActive} />}
           {active === 'novelty' && <NoveltyPage noveltyAnalysis={noveltyAnalysis} setActive={setActive} />}
           {active === 'methodology' && <MethodologyPage methodologyAnalysis={methodologyAnalysis} setActive={setActive} />}
+          {active === 'contribution' && <ContributionPage contributionAnalysis={contributionAnalysis} setActive={setActive} />}
+          {active === 'writing' && <WritingPage writingAnalysis={writingAnalysis} setActive={setActive} />}
           {active === 'improvements' && <ImprovementsPage improvements={improvements} setActive={setActive} />}
           {active === 'report' && <ReportPage report={report} setActive={setActive} />}
+          {active === 'formatting' && <FormattingPage document={document} selectedJournalId={selectedJournalId} selectedJournal={selectedJournal} setActive={setActive} />}
           {active === 'export' && (
             <ExportPage
               document={document}
@@ -341,12 +410,133 @@ function App() {
   )
 }
 
-function Dashboard({ document, setActive, onUpload, isUploading, statusMessage, uploadError }) {
+function ManuscriptsPage({ manuscripts, isLoading, error, onRefresh, onOpen, onUpload }) {
+  const [search, setSearch] = useState('')
+  const [visibleCount, setVisibleCount] = useState(25)
+  const filteredManuscripts = manuscripts.filter((manuscript) => (
+    `${manuscript.title} ${manuscript.filename} ${manuscript.document_id}`
+      .toLowerCase()
+      .includes(search.trim().toLowerCase())
+  ))
+
   return (
     <>
       <section className="page-intro">
         <div>
-          <p className="kicker">THURSDAY, SEPTEMBER 17, 2026</p>
+          <p className="kicker">YOUR LIBRARY</p>
+          <h1>All manuscripts<span className="period">.</span></h1>
+          <p className="subtitle">Browse uploaded manuscripts and open their analysis.</p>
+        </div>
+        <div className="button-row">
+          <button type="button" className="outline-button" onClick={onRefresh} disabled={isLoading}>Refresh</button>
+          <button type="button" className="primary-button" onClick={onUpload}>Upload manuscript <Plus size={16} /></button>
+        </div>
+      </section>
+      <label className="manuscript-search">
+        <span>Search manuscripts</span>
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="Search by title, filename, or ID"
+        />
+      </label>
+      <ManuscriptList
+        manuscripts={filteredManuscripts.slice(0, visibleCount)}
+        isLoading={isLoading}
+        error={error}
+        onOpen={onOpen}
+        emptyMessage={search ? 'No manuscripts match your search.' : 'No manuscripts yet. Upload a DOCX to start your library.'}
+      />
+      {!isLoading && !error && filteredManuscripts.length > visibleCount && (
+        <button type="button" className="outline-button load-more" onClick={() => setVisibleCount(visibleCount + 25)}>
+          Show more ({filteredManuscripts.length - visibleCount} remaining)
+        </button>
+      )}
+    </>
+  )
+}
+
+function ManuscriptList({ manuscripts, isLoading, error, onOpen, emptyMessage = 'No manuscripts yet. Upload a DOCX to start your library.' }) {
+  if (isLoading) return <div className="status-box">Loading manuscripts...</div>
+  if (error) return <div className="status-box error-box" role="alert">{error}</div>
+  if (manuscripts.length === 0) {
+    return <div className="status-box">{emptyMessage}</div>
+  }
+
+  return (
+    <div className="manuscript-list">
+      {manuscripts.map((manuscript) => (
+        <button
+          type="button"
+          className="manuscript-row"
+          key={manuscript.document_id}
+          onClick={() => onOpen(manuscript.document_id)}
+        >
+          <div className="doc-type"><FileText size={18} /></div>
+          <div className="doc-name">
+            <strong>{manuscript.title || manuscript.filename}</strong>
+            <span>{manuscript.document_id} · {manuscript.filename}</span>
+          </div>
+          <span className={`status ${manuscript.status === 'analyzed' ? 'green' : 'blue'}`}>
+            {manuscript.status}
+          </span>
+          <ChevronRight size={17} className="row-arrow" />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function SettingsPage({ theme, setTheme, selectedJournalId, setSelectedJournalId, journalList }) {
+  return (
+    <>
+      <section className="page-intro">
+        <div>
+          <p className="kicker">PREFERENCES</p>
+          <h1>Settings<span className="period">.</span></h1>
+          <p className="subtitle">Choose how PaperPilot looks and which journal to use by default.</p>
+        </div>
+      </section>
+      <section className="panel settings-panel">
+        <div className="settings-field">
+          <div>
+            <strong>Appearance</strong>
+            <span>Choose a light or dark color theme.</span>
+          </div>
+          <select aria-label="Appearance theme" value={theme} onChange={(event) => setTheme(event.target.value)}>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div className="settings-field">
+          <div>
+            <strong>Default journal</strong>
+            <span>Used when analyzing newly uploaded manuscripts.</span>
+          </div>
+          <select
+            aria-label="Default journal"
+            value={selectedJournalId}
+            onChange={(event) => setSelectedJournalId(event.target.value)}
+          >
+            {journalList.length === 0 && <option value={selectedJournalId}>Nature</option>}
+            {journalList.map((journal) => (
+              <option key={journal.journal_id} value={journal.journal_id}>{journal.journal_name}</option>
+            ))}
+          </select>
+        </div>
+        <p className="settings-note">Your preferences are saved in this browser.</p>
+      </section>
+    </>
+  )
+}
+
+function Dashboard({ manuscripts, dashboardSummary, aiStatus, isLoadingManuscripts, manuscriptError, setActive, onOpenManuscript, onUpload, isUploading, statusMessage, uploadError }) {
+  return (
+    <>
+      <section className="page-intro">
+        <div>
+          <p className="kicker">WORKSPACE OVERVIEW</p>
           <h1>Research readiness dashboard<span className="period">.</span></h1>
           <p className="subtitle">Track manuscript status, AI quality checks, and publication readiness from one place.</p>
         </div>
@@ -371,9 +561,9 @@ function Dashboard({ document, setActive, onUpload, isUploading, statusMessage, 
       </section>
 
       <section className="stats-grid">
-        <Stat label="Manuscripts" value="4" detail="1 in review" icon={FileText} />
-        <Stat label="Readiness" value="76" suffix="/100" detail="Improving" icon={Gauge} green />
-        <Stat label="Open suggestions" value="12" detail="4 high priority" icon={Sparkles} />
+        <Stat label="Manuscripts" value={dashboardSummary?.manuscript_count ?? '—'} detail="stored documents" icon={FileText} />
+        <Stat label="Readiness" value={dashboardSummary?.readiness_average ?? '—'} suffix={dashboardSummary?.readiness_average == null ? '' : '/100'} detail={dashboardSummary?.analyzed_count ? `average across ${dashboardSummary.analyzed_count} analyzed` : 'No analyzed manuscripts'} icon={Gauge} green />
+        <Stat label="Open suggestions" value={dashboardSummary?.open_suggestions ?? '—'} detail={`${dashboardSummary?.high_priority_suggestions ?? 0} critical or high priority`} icon={Sparkles} />
       </section>
 
       <section className="section-heading">
@@ -381,23 +571,15 @@ function Dashboard({ document, setActive, onUpload, isUploading, statusMessage, 
           <p className="kicker">RECENT FILES</p>
           <h2>Recent manuscripts</h2>
         </div>
-        <button type="button" className="text-button" onClick={() => setActive('analysis')}>View all <ArrowUpRight size={15} /></button>
+        <button type="button" className="text-button" onClick={() => setActive('manuscripts')}>View all <ArrowUpRight size={15} /></button>
       </section>
 
-      <div className="manuscript-list">
-        {[document].map((doc) => (
-          <button type="button" className="manuscript-row" key={doc.document_id} onClick={() => setActive('analysis')}>
-            <div className="doc-type"><FileText size={18} /></div>
-            <div className="doc-name">
-              <strong>{doc.title}</strong>
-              <span>{doc.document_id} · Updated 18 min ago</span>
-            </div>
-            <span className="status green">In review</span>
-            <div className="score"><strong>76</strong><span>readiness</span></div>
-            <ChevronRight size={17} className="row-arrow" />
-          </button>
-        ))}
-      </div>
+      <ManuscriptList
+        manuscripts={manuscripts.slice(0, 5)}
+        isLoading={isLoadingManuscripts}
+        error={manuscriptError}
+        onOpen={onOpenManuscript}
+      />
 
       <section className="section-heading modules-heading">
         <div>
@@ -408,10 +590,11 @@ function Dashboard({ document, setActive, onUpload, isUploading, statusMessage, 
       </section>
 
       <div className="module-grid">
-        <ModuleCard title="Research quality" eyebrow="01 / Completeness" text="Structured review of completeness, evidence, and clarity." value="76" unit="/100" tone="lavender" icon={BarChart3} onClick={() => setActive('quality')} />
-        <ModuleCard title="Novelty signals" eyebrow="02 / Similarity search" text="Compare your contribution against relevant scholarly papers." value="0.18" unit="overlap" tone="mint" icon={Sparkles} onClick={() => setActive('novelty')} />
-        <ModuleCard title="Methodology" eyebrow="03 / Reproducibility" text="Check datasets, baselines, metrics, and experimental coverage." value="4" unit="gaps" tone="peach" icon={ClipboardCheck} onClick={() => setActive('methodology')} />
+        <ModuleCard title="Research quality" eyebrow="01 / Completeness" text="Core sections detected across analyzed manuscripts." value={dashboardSummary?.dimension_averages?.research_completeness ?? '—'} unit="/100" tone="lavender" icon={BarChart3} onClick={() => setActive('quality')} />
+        <ModuleCard title="Novelty framing" eyebrow="02 / Internal analysis" text="Measures clarity of novelty claims; no external similarity search is configured." value={dashboardSummary?.dimension_averages?.novelty_framing ?? '—'} unit="/100" tone="mint" icon={Sparkles} onClick={() => setActive('novelty')} />
+        <ModuleCard title="Methodology" eyebrow="03 / Reproducibility" text="Dataset, setup, metrics, baselines, and reproducibility evidence." value={dashboardSummary?.dimension_averages?.methodology ?? '—'} unit="/100" tone="peach" icon={ClipboardCheck} onClick={() => setActive('methodology')} />
       </div>
+      <p className="muted-label">AI status: {aiStatus.message}</p>
     </>
   )
 }
@@ -523,6 +706,7 @@ function AnalysisPage({ document, setActive, citationReport }) {
 }
 
 function CitationPage({ citationReport, document, setActive }) {
+  if (!document?.document_id) return <AnalysisRequired setActive={setActive} />
   return (
     <>
       <section className="page-intro">
@@ -547,7 +731,7 @@ function CitationPage({ citationReport, document, setActive }) {
             <div><p className="kicker">ISSUES</p><h2>Reference problems</h2></div>
           </div>
           <div className="finding-list">
-            {(citationReport.missing_references || []).length === 0 && (citationReport.uncited_references || []).length === 0 && (citationReport.duplicate_references || []).length === 0 && (citationReport.numbering_issues || []).length === 0 ? (
+            {['missing_references', 'uncited_references', 'duplicate_references', 'numbering_issues', 'duplicate_citation_numbers', 'malformed_references', 'missing_dois', 'style_mismatches'].every((key) => !(citationReport[key] || []).length) ? (
               <div className="finding"><span className="finding-mark good"><Check size={14} /></span><div><strong>No major citation issues detected</strong><span>Reference integrity looks consistent in the current draft.</span></div></div>
             ) : (
               <>
@@ -574,6 +758,14 @@ function CitationPage({ citationReport, document, setActive }) {
                     <span className="finding-mark warning">!</span>
                     <div><strong>{issue.citation || 'Citation numbering issue'}</strong><span>{issue.message}</span></div>
                   </div>
+                ))}
+                {['duplicate_citation_numbers', 'malformed_references', 'missing_dois', 'style_mismatches'].flatMap((key) => (
+                  (citationReport[key] || []).map((issue, idx) => (
+                    <div className="finding" key={`${key}-${idx}`}>
+                      <span className="finding-mark warning">!</span>
+                      <div><strong>{issue.type?.replaceAll('_', ' ') || key.replaceAll('_', ' ')}</strong><span>{issue.message} {issue.suggestion}</span></div>
+                    </div>
+                  ))
                 ))}
               </>
             )}
@@ -603,10 +795,14 @@ function CitationPage({ citationReport, document, setActive }) {
 }
 
 function JournalPage({ document, selectedJournalId, setSelectedJournalId, journalList, journalMatch, setJournalMatch, setActive }) {
+  const [matchError, setMatchError] = useState('')
   const handleSelect = async (event) => {
     const nextJournal = event.target.value
     setSelectedJournalId(nextJournal)
-    if (!document?.document_id || document.document_id === 'DOC-001') return
+    if (!document?.document_id) {
+      setJournalMatch({})
+      return
+    }
     try {
       const match = await researchApi.matchJournal({
         document_id: document.document_id,
@@ -614,8 +810,9 @@ function JournalPage({ document, selectedJournalId, setSelectedJournalId, journa
         journal_id: nextJournal,
       })
       setJournalMatch(match)
-    } catch {
-      // Keep the previous match if the live lookup fails.
+      setMatchError('')
+    } catch (error) {
+      setMatchError(error.message || 'Journal matching could not be completed.')
     }
   }
 
@@ -625,7 +822,7 @@ function JournalPage({ document, selectedJournalId, setSelectedJournalId, journa
         <div>
           <p className="kicker">SCOPE SUITABILITY</p>
           <h1>Journal fit analysis<span className="period">.</span></h1>
-          <p className="subtitle">Assess topic alignment and scope gaps using a similarity-based suitability review.</p>
+          <p className="subtitle">Assess manuscript topic alignment against the selected profile's configured scope.</p>
         </div>
         <button type="button" className="primary-button" onClick={() => setActive('quality')}>Review quality <ArrowUpRight size={16} /></button>
       </section>
@@ -640,20 +837,21 @@ function JournalPage({ document, selectedJournalId, setSelectedJournalId, journa
               <option key={journal.journal_id} value={journal.journal_id}>{journal.journal_name}</option>
             ))}
           </select>
-          <div className="score-badge">{Math.round((journalMatch.score || 0.82) * 100)}% match</div>
+          <div className="score-badge">{journalMatch.score == null ? 'Not evaluated' : `${Math.round(journalMatch.score * 100)}% match`}</div>
         </div>
+        {matchError && <div className="status-box error-box" role="alert">{matchError}</div>}
         <div className="finding-list">
           <div className="finding">
             <span className="finding-mark good"><Check size={14} /></span>
-            <div><strong>Relevant topics</strong><span>{(journalMatch.relevant_topics || []).join(', ')}</span></div>
+            <div><strong>Relevant topics</strong><span>{(journalMatch.relevant_topics || []).join(', ') || 'Run a match after opening a manuscript.'}</span></div>
           </div>
           <div className="finding">
             <span className="finding-mark warning">!</span>
-            <div><strong>Scope gaps</strong><span>{(journalMatch.scope_gaps || []).join(' ') || 'No major gaps detected.'}</span></div>
+            <div><strong>Scope gaps</strong><span>{(journalMatch.scope_gaps || []).join(' ') || (journalMatch.score == null ? 'Not evaluated.' : 'No scope gaps were detected by the configured term matcher.')}</span></div>
           </div>
           <div className="finding">
             <span className="finding-mark neutral">•</span>
-            <div><strong>Explanation</strong><span>{journalMatch.explanation}</span></div>
+            <div><strong>Explanation</strong><span>{journalMatch.explanation || 'Open an analyzed manuscript to calculate topic alignment.'}</span></div>
           </div>
         </div>
       </section>
@@ -661,7 +859,18 @@ function JournalPage({ document, selectedJournalId, setSelectedJournalId, journa
   )
 }
 
+function AnalysisRequired({ setActive }) {
+  return (
+    <section className="status-box">
+      <strong>No manuscript analysis loaded.</strong>
+      <p>Upload a DOCX or open a saved manuscript to view evidence-based results.</p>
+      <button type="button" className="outline-button" onClick={() => setActive('upload')}>Upload manuscript</button>
+    </section>
+  )
+}
+
 function QualityPage({ qualityAnalysis, setActive }) {
+  if (!qualityAnalysis?.document_id) return <AnalysisRequired setActive={setActive} />
   return (
     <>
       <section className="page-intro">
@@ -694,33 +903,28 @@ function QualityPage({ qualityAnalysis, setActive }) {
 }
 
 function NoveltyPage({ noveltyAnalysis, setActive }) {
+  if (!noveltyAnalysis?.document_id) return <AnalysisRequired setActive={setActive} />
   return (
     <>
       <section className="page-intro">
         <div>
-          <p className="kicker">SIMILARITY EVIDENCE</p>
+          <p className="kicker">INTERNAL CLAIM ANALYSIS</p>
           <h1>Novelty analysis<span className="period">.</span></h1>
-          <p className="subtitle">Review related work similarity and the evidence needed to strengthen differentiation.</p>
+          <p className="subtitle">Novelty score: {noveltyAnalysis.novelty_score}/100. External scholarly search is not configured; this is not a plagiarism or global originality check.</p>
         </div>
         <button type="button" className="primary-button" onClick={() => setActive('methodology')}>Review methodology <ArrowUpRight size={16} /></button>
       </section>
       <div className="detail-grid two-col">
         <section className="panel">
-          <div className="panel-heading"><div><p className="kicker">SIMILAR PAPERS</p><h2>Related research</h2></div></div>
-          <div className="finding-list">
-            {(noveltyAnalysis.similar_papers || []).map((paper, idx) => (
-              <div className="finding" key={`${paper.title}-${idx}`}>
-                <span className="finding-mark neutral">{idx + 1}</span>
-                <div><strong>{paper.title}</strong><span>{paper.venue} · {paper.year} · similarity {paper.similarity}</span></div>
-              </div>
-            ))}
-          </div>
+          <div className="panel-heading"><div><p className="kicker">ORIGINALITY STATUS</p><h2>External comparison</h2></div></div>
+          <p className="supporting-text">{noveltyAnalysis.analysis_scope}</p>
+          <p className="supporting-text">Originality score: {noveltyAnalysis.originality_score ?? 'Not configured'}</p>
         </section>
         <section className="panel">
           <div className="panel-heading"><div><p className="kicker">RECOMMENDATION</p><h2>What to improve</h2></div></div>
-          <p className="supporting-text">{noveltyAnalysis.comparative_summary}</p>
+          <p className="supporting-text">{noveltyAnalysis.explanation}</p>
           <ul className="mini-list">
-            {(noveltyAnalysis.potential_differentiators || []).map((item) => <li key={item}>{item}</li>)}
+            {(noveltyAnalysis.improvement_suggestions || []).map((item) => <li key={item}>{item}</li>)}
           </ul>
         </section>
       </div>
@@ -729,6 +933,7 @@ function NoveltyPage({ noveltyAnalysis, setActive }) {
 }
 
 function MethodologyPage({ methodologyAnalysis, setActive }) {
+  if (!methodologyAnalysis?.document_id) return <AnalysisRequired setActive={setActive} />
   return (
     <>
       <section className="page-intro">
@@ -759,14 +964,120 @@ function MethodologyPage({ methodologyAnalysis, setActive }) {
   )
 }
 
+function ContributionPage({ contributionAnalysis, setActive }) {
+  if (!contributionAnalysis?.document_id) return <AnalysisRequired setActive={setActive} />
+  return (
+    <>
+      <section className="page-intro">
+        <div>
+          <p className="kicker">TECHNICAL EVIDENCE</p>
+          <h1>Contribution analysis<span className="period">.</span></h1>
+          <p className="subtitle">Evidence-presence assessment, not a determination of scientific importance.</p>
+        </div>
+        <button type="button" className="primary-button" onClick={() => setActive('methodology')}>Review methodology <ArrowUpRight size={16} /></button>
+      </section>
+      <section className="analysis-hero">
+        <div className="analysis-score">
+          <div className="score-ring">{contributionAnalysis.technical_contribution_score}<small>/100</small></div>
+          <div><p className="kicker">TECHNICAL CONTRIBUTION SCORE</p><p>{contributionAnalysis.analysis_scope}</p></div>
+        </div>
+      </section>
+      <div className="detail-grid two-col">
+        <section className="panel"><h2>Evidence detected</h2><ul className="mini-list">{(contributionAnalysis.strengths || []).map((item) => <li key={item}>{item}</li>)}</ul></section>
+        <section className="panel"><h2>Missing evidence</h2><ul className="mini-list">{(contributionAnalysis.recommendations || []).map((item) => <li key={item}>{item}</li>)}</ul></section>
+      </div>
+    </>
+  )
+}
+
+function WritingPage({ writingAnalysis, setActive }) {
+  if (!writingAnalysis?.document_id) return <AnalysisRequired setActive={setActive} />
+  return (
+    <>
+      <section className="page-intro">
+        <div>
+          <p className="kicker">ACADEMIC WRITING</p>
+          <h1>Writing quality<span className="period">.</span></h1>
+          <p className="subtitle">Rule-based checks only. Grammar and spelling proofing are not configured.</p>
+        </div>
+      </section>
+      <section className="stats-grid compact-grid">
+        <Stat label="Writing signals" value={writingAnalysis.score ?? '—'} suffix="/100" detail="heuristic indicators" icon={FileText} />
+        <Stat label="Flagged sentences" value={writingAnalysis.sentence_findings?.length ?? 0} detail="review individually" icon={Sparkles} />
+        <Stat label="Other issues" value={writingAnalysis.issues?.length ?? 0} detail="rule-based checks" icon={ClipboardCheck} />
+      </section>
+      {(writingAnalysis.sentence_findings || []).length === 0 ? (
+        <div className="status-box">No sentence-level issues were detected by the configured checks. This is not a grammar or spelling verification.</div>
+      ) : (
+        <div className="improvement-list">
+          {writingAnalysis.sentence_findings.map((finding, index) => (
+            <section className="panel improvement-card" key={`${finding.original}-${index}`}>
+              <div className="comparison-grid">
+                <div><label>Original sentence</label><p>{finding.original}</p></div>
+                <div><label>Suggested improvement</label><p>{finding.suggested_improvement}</p></div>
+              </div>
+              <div className="finding-list">
+                <div className="finding"><div><strong>Problem</strong><span>{finding.problem}</span></div></div>
+                <div className="finding"><div><strong>Reason</strong><span>{finding.reason}</span></div></div>
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function FormattingPage({ document, selectedJournalId, selectedJournal, setActive }) {
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const [isChecking, setIsChecking] = useState(false)
+
+  const checkFormatting = async () => {
+    if (!document?.document_id) return
+    setError('')
+    setIsChecking(true)
+    try {
+      setResult(await researchApi.formatDocument(document.document_id, { journal_id: selectedJournalId }))
+    } catch (requestError) {
+      setError(requestError.message || 'Formatting check failed.')
+    } finally {
+      setIsChecking(false)
+    }
+  }
+
+  if (!document?.document_id) return <AnalysisRequired setActive={setActive} />
+  return (
+    <>
+      <section className="page-intro">
+        <div>
+          <p className="kicker">JOURNAL RULE CHECK</p>
+          <h1>Formatting review<span className="period">.</span></h1>
+          <p className="subtitle">{selectedJournal?.journal_name || 'Selected profile'} · {selectedJournal?.profile_basis || 'Generic profile; verify publisher instructions.'}</p>
+        </div>
+        <button type="button" className="primary-button" onClick={checkFormatting} disabled={isChecking}>{isChecking ? 'Checking...' : 'Check formatting rules'}</button>
+      </section>
+      {error && <div className="status-box error-box" role="alert">{error}</div>}
+      {result && (
+        <div className="detail-grid two-col">
+          <section className="panel"><h2>Applied rule values</h2><pre className="rules-output">{JSON.stringify(result.applied_rules, null, 2)}</pre></section>
+          <section className="panel"><h2>Warnings</h2>{result.warnings?.length ? <ul className="mini-list">{result.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul> : <p className="supporting-text">No formatter warnings were reported.</p>}</section>
+        </div>
+      )}
+      {!result && !error && <div className="status-box">Run the profile check to see the rules currently recognized by the formatter.</div>}
+    </>
+  )
+}
+
 function ImprovementsPage({ improvements, setActive }) {
+  if (!improvements?.document_id) return <AnalysisRequired setActive={setActive} />
   return (
     <>
       <section className="page-intro">
         <div>
           <p className="kicker">RESEARCHER CONTROL</p>
           <h1>AI improvement suggestions<span className="period">.</span></h1>
-          <p className="subtitle">Review and decide whether each suggestion should be accepted, rejected, or edited.</p>
+          <p className="subtitle">Suggestions are advisory and do not modify the uploaded manuscript.</p>
         </div>
         <button type="button" className="primary-button" onClick={() => setActive('report')}>Open readiness report <ArrowUpRight size={16} /></button>
       </section>
@@ -775,11 +1086,6 @@ function ImprovementsPage({ improvements, setActive }) {
           <div key={item.id} className="panel improvement-card">
             <div className="improvement-header">
               <span>{item.section}</span>
-              <div className="button-row">
-                <button type="button" className="chip accept">Accept</button>
-                <button type="button" className="chip reject">Reject</button>
-                <button type="button" className="chip edit">Edit</button>
-              </div>
             </div>
             <div className="comparison-grid">
               <div>
@@ -799,13 +1105,14 @@ function ImprovementsPage({ improvements, setActive }) {
 }
 
 function ReportPage({ report, setActive }) {
+  if (!report?.document_id) return <AnalysisRequired setActive={setActive} />
   return (
     <>
       <section className="page-intro">
         <div>
           <p className="kicker">PRE-SUBMISSION ASSESSMENT</p>
           <h1>{report.title}<span className="period">.</span></h1>
-          <p className="subtitle">{report.summary}</p>
+          <p className="subtitle">Overall readiness: {report.overall_readiness}/100. {report.summary}</p>
         </div>
         <button type="button" className="primary-button" onClick={() => setActive('export')}>Generate final manuscript <ArrowUpRight size={16} /></button>
       </section>
@@ -836,9 +1143,10 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
   const [exportStatus, setExportStatus] = useState('idle')
   const [exportMessage, setExportMessage] = useState('Format and generate the journal-aligned submission package.')
   const [exportError, setExportError] = useState('')
+  const [exportWarnings, setExportWarnings] = useState([])
 
   const runExport = async () => {
-    if (!document?.document_id || document.document_id === 'DOC-001') {
+    if (!document?.document_id) {
       setExportError('Upload and analyze a manuscript before exporting.')
       return
     }
@@ -847,9 +1155,10 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
     setExportMessage('Applying journal template and building submission package...')
     try {
       await researchApi.formatDocument(document.document_id, { journal_id: selectedJournalId })
-      await researchApi.generateDocument(document.document_id, { journal_id: selectedJournalId })
+      const generated = await researchApi.generateDocument(document.document_id, { journal_id: selectedJournalId })
+      setExportWarnings(generated.formatting_warnings || [])
       setExportStatus('ready')
-      setExportMessage('Submission package is ready. Download DOCX, PDF, or the readiness report.')
+      setExportMessage(`Submission package is ready. ${generated.pdf_rendering?.message || ''}`)
     } catch (error) {
       setExportStatus('error')
       setExportError(error.message || 'Export failed.')
@@ -895,8 +1204,14 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
         <div className={exportStatus === 'ready' ? 'status-box success-box' : 'status-box'}>
           <strong>{exportStatus === 'working' ? 'Generating...' : exportStatus === 'ready' ? 'Ready for export' : 'Generate outputs'}</strong>
           <p>{exportError || exportMessage}</p>
-          <p>Manuscript: {document.title} · Journal: {selectedJournal?.journal_name || 'Nature'}</p>
+          <p>Manuscript: {document.title || 'Untitled'} · Journal: {selectedJournal?.journal_name || 'Not selected'}</p>
         </div>
+        {exportWarnings.length > 0 && (
+          <div className="status-box" role="status">
+            <strong>Formatting warnings</strong>
+            <ul className="mini-list">{exportWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+          </div>
+        )}
         <div className="button-row export-buttons">
           <button type="button" className="primary-button" onClick={runExport} disabled={exportStatus === 'working'}>
             {exportStatus === 'ready' ? 'Regenerate package' : 'Generate submission package'}

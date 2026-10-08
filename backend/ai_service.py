@@ -4,7 +4,8 @@ import json
 import re
 from typing import Any
 
-from backend.journal.rules import get_journal_rules
+from backend.citation.validator import validate_citations
+from backend.journal.rules import get_available_journals, get_journal_rules
 
 
 def _normalize_text(value: str | None) -> str:
@@ -15,6 +16,68 @@ def _normalize_tokens(value: str | None) -> set[str]:
     if not value:
         return set()
     return {token for token in re.findall(r"[a-z0-9]+", (value or "").lower()) if token}
+
+
+def _section_text(analysis: dict | None, section_type: str) -> str:
+    if not isinstance(analysis, dict):
+        return ""
+    aliases = {
+        "methodology": {"methodology", "methods", "materials and methods"},
+        "results": {"results", "findings"},
+    }
+    accepted = aliases.get(section_type, {section_type})
+    return " ".join(
+        str(section.get("content") or "")
+        for section in analysis.get("sections", [])
+        if isinstance(section, dict)
+        and (section.get("type", "").lower() in accepted or section.get("heading", "").lower() in accepted)
+    )
+
+
+def _evidence_score(signals: list[bool], base: int = 0) -> int:
+    if not signals:
+        return 0
+    return min(100, round(base + (sum(signals) / len(signals)) * (100 - base)))
+
+
+def _detected_section_types(analysis: dict | None) -> set[str]:
+    if not isinstance(analysis, dict):
+        return set()
+    types = set()
+    for section in analysis.get("sections", []):
+        if not isinstance(section, dict):
+            continue
+        types.add(str(section.get("type") or "").lower().replace(" ", "_"))
+        types.add(str(section.get("heading") or "").lower().replace(" ", "_"))
+    return types
+
+
+def _novelty_evidence(analysis: dict | None) -> dict:
+    document = analysis or {}
+    text = _collect_manuscript_terms(document).lower()
+    gap_phrases = ("research gap", "little is known", "few studies", "limited work", "has not been", "remains unexplored")
+    contribution_phrases = ("we propose", "our contribution", "this study contributes", "we present", "we introduce")
+    comparison_phrases = ("prior work", "existing work", "compared with", "baseline", "state-of-the-art")
+    gap_clear = any(phrase in text for phrase in gap_phrases)
+    contribution_clear = any(phrase in text for phrase in contribution_phrases)
+    comparison_present = any(phrase in text for phrase in comparison_phrases)
+    method_present = bool(_section_text(document, "methodology") or re.search(r"\b(method|model|algorithm|approach)\b", text))
+    results_present = bool(_section_text(document, "results") or re.search(r"\b(results?|accuracy|\d+(?:\.\d+)?%)\b", text))
+    keywords_present = len(document.get("keywords") or []) >= 3
+    score = _evidence_score([gap_clear, contribution_clear, comparison_present, method_present, results_present, keywords_present])
+    return {
+        "novelty_score": score,
+        "research_gap_clarity": _evidence_score([gap_clear, comparison_present]),
+        "contribution_strength": _evidence_score([contribution_clear, method_present, results_present]),
+        "evidence": {
+            "explicit_research_gap": gap_clear,
+            "explicit_contribution_claim": contribution_clear,
+            "prior_work_or_baseline_comparison": comparison_present,
+            "method_or_approach_described": method_present,
+            "results_evidence_present": results_present,
+            "keywords_present": keywords_present,
+        },
+    }
 
 
 def _collect_manuscript_terms(analysis: dict | None) -> str:
@@ -85,7 +148,7 @@ def _match_score_for_topics(manuscript_text: str, journal: dict | None) -> tuple
         if overlaps:
             matched_topics = overlaps[:5]
         else:
-            matched_topics = [sorted(manuscript_tokens, key=len)[0]]
+            matched_topics = []
 
     if not matched_topics:
         return 0.0, [], ["The manuscript topic is not currently aligned with the selected journal's scope and requires further review."]
@@ -98,7 +161,6 @@ def _match_score_for_topics(manuscript_text: str, journal: dict | None) -> tuple
         overlap = len(topic_tokens & manuscript_tokens)
         score += min(1.0, overlap / max(len(topic_tokens), 1))
     score = round(min(0.99, score / max(len(matched_topics), 1)), 4)
-    score = max(score, 0.1)
 
     gaps = []
     if score < 0.45:
@@ -109,216 +171,212 @@ def _match_score_for_topics(manuscript_text: str, journal: dict | None) -> tuple
     return score, matched_topics[:5], gaps
 
 
-def analyze_quality(document_id: str, analysis: dict | None = None) -> dict:
+def analyze_quality(document_id: str, analysis: dict | None = None, journal_id: str | None = None) -> dict:
     document = analysis or {}
-    body = _normalize_text(document.get("abstract") or document.get("paragraphs", [""])[0])
-    sections = [section.get("type", "") for section in document.get("sections", [])]
-    missing = []
-    for required in [
-        "abstract",
-        "introduction",
-        "related_work",
-        "methodology",
-        "results",
-        "discussion",
-        "conclusion",
-        "references",
-    ]:
-        if required not in sections:
-            missing.append(required)
-
-    writing_issues = []
+    paragraphs = document.get("paragraphs") or [""]
+    body = _normalize_text(document.get("abstract") or paragraphs[0])
+    try:
+        journal = get_journal_rules((journal_id or "nature").lower())
+    except ValueError:
+        journal = get_journal_rules("nature")
+    sections = _detected_section_types(document)
+    required_sections = journal.get("required_sections") or ["abstract", "introduction", "methodology", "results", "conclusion", "references"]
+    missing = [required for required in required_sections if required not in sections]
+    writing_issues = analyze_writing(document_id, document)["issues"]
     if not document.get("keywords"):
         writing_issues.append("Keywords are missing or too sparse for discovery.")
     if len(body) < 120:
         writing_issues.append("Abstract is short and may not explain the problem, method, and result clearly.")
+    introduction = _section_text(document, "introduction").lower()
+    gap_present = any(term in introduction for term in ("research gap", "little is known", "few studies", "limited work", "has not been", "remains unexplored"))
+    method_analysis = analyze_methodology(document_id, document)
+    contribution_analysis = analyze_contribution(document_id, document)
+    recommendations = [f"Add or clearly label the {item.replace('_', ' ')} section if required by the selected profile." for item in missing]
+    recommendations.extend(method_analysis["suggestions"][:3])
+    if not gap_present:
+        recommendations.append("State the research gap explicitly in the introduction and distinguish it from prior work.")
 
     return {
         "document_id": document_id,
         "module": "quality",
-        "research_gap": "The manuscript presents a clear technical problem and motivation, but a stronger explicit comparison against prior work would improve the literature positioning.",
-        "technical_contribution": "The manuscript describes a concrete model or method with some evidence of performance, but the contribution should be framed more explicitly around the unique technical advance.",
-        "methodology_issues": [
-            issue for issue in [
-                "Dataset scale and curation details should be stated more clearly.",
-                "Experimental settings should include more baseline comparisons and ablation details.",
-            ] if issue
-        ],
+        "quality_score": _evidence_score([
+            not missing,
+            gap_present,
+            method_analysis["score"] >= 60,
+            contribution_analysis["technical_contribution_score"] >= 60,
+            not writing_issues,
+        ]),
+        "research_gap": "An explicit research-gap signal was detected in the introduction." if gap_present else "No explicit research-gap statement was detected in the parsed introduction.",
+        "technical_contribution": f"Evidence checks detected {len(contribution_analysis['strengths'])} of 10 technical contribution signals.",
+        "methodology_issues": method_analysis["missing_information"],
         "missing_sections": missing,
         "writing_issues": writing_issues,
-        "suggestions": [
-            "State the research gap in a single paragraph with explicit comparison to prior work.",
-            "Add a concise contributions paragraph after the abstract or introduction.",
-            "Clarify datasets, splits, baselines, and evaluation metrics in the methodology section.",
-        ],
+        "suggestions": list(dict.fromkeys(recommendations)),
+        "analysis_scope": f"Rule-based completeness assessment against the {journal.get('template_name', journal_id or 'selected')} profile; not a peer review.",
     }
 
 
 def analyze_methodology(document_id: str, analysis: dict | None = None) -> dict:
     doc = analysis or {}
-    text = "\n".join(doc.get("paragraphs", []))
-    detected = []
-    missing = []
+    text = _section_text(doc, "methodology") or "\n".join(doc.get("paragraphs") or [])
     lower = text.lower()
-
-    for signal in [
-        "dataset",
-        "training",
-        "baseline",
-        "evaluation",
-        "metrics",
-        "model",
-        "experiment",
-        "resnet",
-        "cnn",
-        "adam",
-        "auc",
-        "f1",
-    ]:
-        if signal in lower:
-            detected.append(signal)
-
-    for required in ["dataset size", "experimental setup", "evaluation metrics", "baseline comparison"]:
-        if required.lower() not in lower:
-            missing.append(required)
-
+    checks = [
+        ("research methodology", bool(re.search(r"\b(method|methodology|approach|protocol)\b", lower))),
+        ("dataset", bool(re.search(r"\b(dataset|data set|corpus|cohort)\b", lower))),
+        ("dataset size", bool(re.search(r"\b\d[\d,]*(?:\.\d+)?\s*(?:samples|records|participants|patients|images|documents|observations)\b", lower))),
+        ("data source", bool(re.search(r"\b(data source|collected from|obtained from|public dataset|repository)\b", lower))),
+        ("preprocessing", bool(re.search(r"\b(preprocess|normaliz|filter|cleaned|augmentation)\w*\b", lower))),
+        ("experimental setup", bool(re.search(r"\b(experimental setup|experiment protocol|train.?test split|validation set|study design)\b", lower))),
+        ("algorithms or models", bool(re.search(r"\b(model|algorithm|architecture|classifier|regression|network)\b", lower))),
+        ("parameters", bool(re.search(r"\b(parameter|hyperparameter|learning rate|epochs|batch size|threshold)\b", lower))),
+        ("training procedure", bool(re.search(r"\b(train|training|fine.?tun|optimizer)\w*\b", lower))),
+        ("evaluation metrics", bool(re.search(r"\b(metric|accuracy|precision|recall|f1|auc|rmse|mae|bleu)\b", lower))),
+        ("baseline methods", bool(re.search(r"\b(baseline|benchmark|compared with|comparison)\b", lower))),
+        ("statistical validation", bool(re.search(r"\b(p.?value|confidence interval|statistical|significance test|standard deviation)\b", lower))),
+        ("reproducibility information", bool(re.search(r"\b(reproducib|random seed|code available|data availability|software version)\w*\b", lower))),
+        ("limitations", bool(re.search(r"\blimitations?\b", lower))),
+    ]
+    detected = [name for name, present in checks if present]
+    missing = [name for name, present in checks if not present]
+    strengths = [f"The methodology mentions {name}." for name in detected]
+    suggestions = [f"Report {name.lower()} in the methodology where applicable." for name in missing]
     return {
         "document_id": document_id,
         "module": "methodology",
+        "score": _evidence_score([present for _, present in checks]),
         "detected_information": detected[:8],
         "missing_information": missing,
-        "potential_weakness": "The manuscript may lack reproducibility details if dataset provenance, preprocessing, and comparison protocols are not described explicitly.",
-        "actionable_suggestion": "Expand the methodology section with dataset size, split strategy, hyperparameters, baselines, and evaluation criteria.",
-        "strengths": ["The manuscript appears to include a defined model and some evaluation signals."],
-        "suggestions": [
-            "Add a data statement describing source, size, and filtering criteria.",
-            "Report baseline models and exact parameter settings.",
-            "Describe the experimental protocol and statistical significance checks.",
-        ],
+        "potential_weakness": "The parsed methodology does not explicitly identify: " + ", ".join(missing) + "." if missing else "The configured methodology evidence checks found no listed gaps; this does not establish methodological validity.",
+        "actionable_suggestion": suggestions[0] if suggestions else "No missing evidence was detected by these rule-based checks.",
+        "strengths": strengths,
+        "suggestions": suggestions,
+        "analysis_scope": "Rule-based text checks; scientific validity and unmentioned details require human review.",
     }
 
 
 def analyze_contribution(document_id: str, analysis: dict | None = None) -> dict:
     doc = analysis or {}
-    text = "\n".join(doc.get("paragraphs", []))
+    text = _collect_manuscript_terms(doc)
     lower = text.lower()
-    parts = {
-        "problem": "The manuscript addresses a meaningful applied problem in model performance and decision support.",
-        "research_gap": "The manuscript suggests a gap in existing methods by emphasizing an under-addressed challenge compared with standard baselines.",
-        "proposed_solution": "A dedicated model or pipeline is proposed to address the problem.",
-        "methodology": "The method is described in terms of training setup and evaluation strategy.",
-        "experiments": "Experiments and result summaries are present in the manuscript.",
-        "results": "The article reports performance evidence and comparative results.",
-        "contribution": "The manuscript contributes a practical method with evidence of improved task performance, though the differentiation should be sharper.",
-    }
-    if "gap" not in lower and "motivated" not in lower and "existing work" not in lower:
-        parts["research_gap"] = "The manuscript would benefit from a more explicit statement of the research gap and contrast with prior work."
+    method = _section_text(doc, "methodology").lower()
+    results = _section_text(doc, "results").lower()
+    checks = [
+        ("problem significance", bool(doc.get("title") and (doc.get("abstract") or _section_text(doc, "introduction")))),
+        ("technical novelty framing", any(term in lower for term in ("research gap", "novel", "little is known", "limited work"))),
+        ("proposed method", bool(re.search(r"\b(we propose|we present|we introduce|our method|our approach)\b", lower))),
+        ("algorithm or model contribution", bool(re.search(r"\b(algorithm|model|architecture|framework|method)\b", lower))),
+        ("implementation contribution", bool(re.search(r"\b(implementation|prototype|system|software|code)\b", lower))),
+        ("experimental contribution", bool(results)),
+        ("baseline comparison", bool(re.search(r"\b(baseline|compared with|comparison|state-of-the-art)\b", lower))),
+        ("measurable results", bool(re.search(r"\b\d+(?:\.\d+)?\s*(?:%|ms|seconds?|accuracy|f1|auc|rmse)\b", results))),
+        ("reproducibility", bool(re.search(r"\b(reproducib|random seed|code available|data availability)\w*\b", method))),
+        ("limitations", bool(re.search(r"\blimitations?\b", lower))),
+    ]
+    strengths = [name for name, present in checks if present]
+    missing = [name for name, present in checks if not present]
+    suggestions = [f"Add manuscript evidence for {name.lower()} or explain why it is not applicable." for name in missing]
     return {
         "document_id": document_id,
         "module": "contribution",
-        "problem": parts["problem"],
-        "research_gap": parts["research_gap"],
-        "proposed_solution": parts["proposed_solution"],
-        "methodology": parts["methodology"],
-        "experiments": parts["experiments"],
-        "results": parts["results"],
-        "contribution": parts["contribution"],
-        "findings": ["A concrete technical solution is described.", "Performance evidence is present.", "The contribution statement could be made more explicit."],
+        "technical_contribution_score": _evidence_score([present for _, present in checks]),
+        "strengths": strengths,
+        "weaknesses": missing,
+        "missing_evidence": missing,
+        "recommendations": suggestions,
+        "analysis_scope": "Evidence-presence assessment only; it does not determine scientific importance or validate claims.",
     }
 
 
 def analyze_novelty(document_id: str, analysis: dict | None = None) -> dict:
     doc = analysis or {}
-    title = doc.get("title") or "Untitled manuscript"
-    abstract = doc.get("abstract") or ""
+    evidence = _novelty_evidence(doc)
+    missing = [label for key, label in [
+        ("explicit_research_gap", "State the research gap and contrast it with prior work."),
+        ("explicit_contribution_claim", "Add a specific contribution claim."),
+        ("prior_work_or_baseline_comparison", "Compare the approach with relevant prior work or baselines."),
+        ("results_evidence_present", "Connect novelty claims to measurable results."),
+    ] if not evidence["evidence"][key]]
     return {
         "document_id": document_id,
         "module": "novelty",
-        "title": title,
-        "abstract_summary": abstract[:300],
-        "similar_papers": [
-            {
-                "title": "Clinical imaging with deep CNNs for decision support",
-                "authors": ["Lee A.", "Patel B."],
-                "year": "2024",
-                "venue": "Nature Machine Intelligence",
-                "doi": "10.1000/example",
-                "similarity": 0.82,
-                "overlap": ["clinical imaging", "deep learning", "diagnosis"],
-                "differentiation": "The manuscript appears to focus on a concrete application setting and deployment constraints, which may distinguish it from broader benchmark-driven papers.",
-            },
-            {
-                "title": "Benchmarking multimodal medical vision models",
-                "authors": ["Chen L."],
-                "year": "2023",
-                "venue": "IEEE Transactions on Medical Imaging",
-                "doi": "10.1000/example-2",
-                "similarity": 0.71,
-                "overlap": ["medical imaging", "deep learning", "evaluation"],
-                "differentiation": "The manuscript may gain novelty by emphasizing the unique task formulation, dataset, or ablation results.",
-            },
-        ],
-        "comparative_summary": "The manuscript is broadly aligned with recent clinical AI and medical imaging work, but the novelty claim should be framed around a distinct problem framing, architecture choice, or deployment context.",
-        "potential_differentiators": [
-            "A clearer claim about the unique problem formulation.",
-            "Specific ablation or robustness evidence.",
-            "A stronger explanation of why the proposed setup is different from prior pipelines.",
-        ],
+        **evidence,
+        "originality_score": None,
+        "originality_status": "not_configured",
+        "analysis_scope": "Internal manuscript analysis only; no external scholarly search or global similarity check is configured.",
+        "potential_overlap_indicators": [],
+        "explanation": "The novelty score measures clarity of novelty-related evidence in this manuscript. It does not verify global originality.",
+        "improvement_suggestions": missing,
     }
 
 
 def analyze_writing(document_id: str, analysis: dict | None = None) -> dict:
     doc = analysis or {}
-    text = "\n".join(doc.get("paragraphs", []))
+    text = "\n".join(doc.get("paragraphs") or []) or "\n".join(
+        str(section.get("content") or "") for section in doc.get("sections", []) if isinstance(section, dict)
+    )
     issues = []
-    if len(text.split()) < 400:
-        issues.append("The manuscript is relatively brief; a few sections may need more contextual detail.")
-    if not doc.get("abstract"):
-        issues.append("Abstract is missing, which weakens the initial paper overview.")
-    if len(doc.get("keywords", [])) < 3:
-        issues.append("Keyword coverage is light and may reduce discoverability.")
+    findings = []
+    informal_terms = ("obviously", "awesome", "huge", "a lot of", "kind of")
+    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
+        words = sentence.split()
+        if not sentence:
+            continue
+        if len(words) > 35:
+            problem = f"Long sentence ({len(words)} words) may be difficult to follow."
+            issues.append(problem)
+            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Consider splitting at a clause boundary while preserving the same claims and relationships.", "reason": "Shorter sentences can make technical arguments easier to evaluate."})
+        if any(term in sentence.lower() for term in informal_terms):
+            problem = "Potentially informal or vague wording was detected."
+            issues.append(problem)
+            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Replace the flagged wording with the precise technical term intended by the authors.", "reason": "Specific terminology is easier to interpret and verify."})
+    if not doc.get("abstract") and "abstract" not in _detected_section_types(doc):
+        issues.append("No abstract text or abstract section was detected.")
+    if len(doc.get("keywords") or []) < 3:
+        issues.append("Fewer than three keywords were parsed; check the selected journal's keyword requirements.")
+    score = max(0, 100 - len(issues) * 8)
     return {
         "document_id": document_id,
         "module": "writing",
-        "grammar": "The draft appears generally understandable, with minor opportunities for clearer phrasing.",
-        "clarity": "Several sentences can be tightened to better distinguish the problem, method, and findings.",
-        "tone": "The tone is largely academic but could be more concise in the contributions and limitations sections.",
+        "score": score,
+        "grammar": "Not configured; deterministic writing checks do not verify grammar or spelling.",
+        "spelling": "Not configured; deterministic writing checks do not verify spelling.",
+        "clarity": "Rule-based sentence-length and wording checks only.",
+        "tone": "Potentially informal wording is flagged when matched; academic tone is not fully classified.",
         "issues": issues,
-        "suggestions": [
-            "Use a stronger contribution sentence in the introduction.",
-            "Ensure each section begins with a clear research purpose.",
-            "Replace redundancy with precise technical wording.",
-        ],
+        "sentence_findings": findings,
+        "suggestions": [item["suggested_improvement"] for item in findings],
+        "analysis_scope": "Limited rule-based analysis; no full grammar, spelling, coherence, or terminology model is configured.",
     }
 
 
 def generate_improvements(document_id: str, analysis: dict | None = None, focus: str | None = None) -> dict:
     doc = analysis or {}
     title = doc.get("title") or "Untitled manuscript"
-    abstract = (doc.get("abstract") or "").strip()
-    suggestions = [
-        {
-            "id": "improvement-1",
-            "section": "abstract",
-            "original": abstract[:200] if abstract else "The manuscript introduces an approach for clinical decision support.",
-            "suggested": "We propose a clinical decision-support model that addresses a key limitation in prior diagnostic workflows by combining a scalable deep-learning architecture with explicit evaluation against strong baselines.",
-            "reason": "Improves clarity, motivation, and contribution framing.",
-        },
-        {
-            "id": "improvement-2",
-            "section": "introduction",
-            "original": "Existing work relies on handcrafted features.",
-            "suggested": "Existing clinical AI pipelines often depend on handcrafted features and limited benchmark coverage, leaving a clear need for a more scalable and generalizable approach.",
-            "reason": "Strengthens the research gap statement.",
-        },
-        {
-            "id": "improvement-3",
-            "section": "methodology",
-            "original": "We trained a model on clinical records.",
-            "suggested": "We trained the proposed model on a curated clinical dataset with explicit train/validation/test splits, standardized preprocessing, and fixed hyperparameters to support reproducibility.",
-            "reason": "Makes methods easier to evaluate and reproduce.",
-        },
-    ]
+    section_types = _detected_section_types(doc)
+    recommendations: list[tuple[str, str, str]] = []
+    if not doc.get("abstract") and "abstract" not in section_types:
+        recommendations.append(("abstract", "Add an abstract summarizing the research question, method, key results, and conclusion.", "No abstract text or abstract section was detected."))
+    if len(doc.get("keywords") or []) < 3:
+        recommendations.append(("keywords", "Add a concise set of topic-specific keywords if required by the selected journal.", "Fewer than three keywords were parsed."))
+    intro = _section_text(doc, "introduction").lower()
+    if intro and not any(term in intro for term in ("research gap", "little is known", "few studies", "limited work", "has not been")):
+        recommendations.append(("introduction", "State the research gap and distinguish it from the cited prior work.", "No explicit research-gap signal was detected in the introduction."))
+    method_review = analyze_methodology(document_id, doc)
+    for missing in method_review["missing_information"]:
+        recommendations.append(("methodology", f"Report {missing.lower()} where applicable to make the study assessable and reproducible.", f"The methodology text does not clearly identify {missing.lower()}."))
+
+    suggestions = []
+    for index, (section_name, action, reason) in enumerate(recommendations, start=1):
+        source = _section_text(doc, section_name)
+        first_sentence = re.split(r"(?<=[.!?])\s+", source.strip(), maxsplit=1)[0] if source.strip() else ""
+        suggestions.append({
+            "id": f"improvement-{index}",
+            "section": section_name,
+            "original": first_sentence or "No source sentence found; this recommendation concerns missing content.",
+            "suggested": action,
+            "reason": reason,
+            "action_type": "recommendation",
+        })
     return {
         "document_id": document_id,
         "module": "improvement",
@@ -326,21 +384,16 @@ def generate_improvements(document_id: str, analysis: dict | None = None, focus:
         "focus": focus or "research quality",
         "suggestions": suggestions,
         "approved_changes": [],
+        "source_modified": False,
     }
 
 
 def generate_journal_match(document_id: str, analysis: dict | None = None, journal_id: str | None = None) -> dict:
     journal_key = (journal_id or "nature").lower()
-    try:
-        journal = get_journal_rules(journal_key)
-    except ValueError:
-        journal = get_journal_rules("nature")
+    journal = get_journal_rules(journal_key)
 
     manuscript_text = _collect_manuscript_terms(analysis)
     score, relevant_topics, scope_gaps = _match_score_for_topics(manuscript_text, journal)
-
-    if not relevant_topics and journal.get("scope_topics"):
-        relevant_topics = [str(topic) for topic in journal["scope_topics"][:3]]
 
     if not scope_gaps:
         scope_gaps = ["The manuscript topic is broadly aligned with the journal's scope; no major mismatch detected, but a clearer framing may still improve fit."]
@@ -355,44 +408,145 @@ def generate_journal_match(document_id: str, analysis: dict | None = None, journ
         f"The selected journal emphasizes {journal.get('journal_name', 'the journal')}'s technical focus on {journal.get('scope_summary', 'applied research and technical methods')}. "
         f"This score reflects the overlap between the manuscript's key terms and the journal's actual scope rather than a static default.")
 
+    required_sections = set(journal.get("required_sections") or [])
+    section_types = _detected_section_types(analysis)
+    missing_sections = required_sections - section_types
+    missing_requirements = sorted(missing_sections)
+    word_count = len(manuscript_text.split())
+    word_limit = journal.get("word_limit")
+    if word_limit and word_count > word_limit:
+        missing_requirements.append(f"Word limit exceeded: {word_count} words versus {word_limit} configured.")
+    abstract_limit = journal.get("abstract_formatting", {}).get("max_words")
+    abstract_words = len(str((analysis or {}).get("abstract") or "").split())
+    if abstract_limit and abstract_words > abstract_limit:
+        missing_requirements.append(f"Abstract exceeds configured limit: {abstract_words} words versus {abstract_limit}.")
+    article_type = (analysis or {}).get("article_type") or (analysis or {}).get("metadata", {}).get("article_type")
+    ranked_journals = []
+    for candidate in get_available_journals():
+        candidate_text = _collect_manuscript_terms(analysis)
+        candidate_score, candidate_topics, _ = _match_score_for_topics(candidate_text, candidate)
+        ranked_journals.append({
+            "journal_id": candidate["journal_id"],
+            "journal_name": candidate["journal_name"],
+            "score": candidate_score,
+            "relevant_topics": candidate_topics,
+        })
+    ranked_journals.sort(key=lambda item: item["score"], reverse=True)
     return {
         "document_id": document_id,
         "journal_id": journal_key,
         "score": score,
+        "scope_match": score,
+        "topic_match": score,
+        "article_type": article_type or "not provided",
+        "article_type_match": None if not article_type else article_type.lower() == str(journal.get("article_type", "")).lower(),
+        "formatting_compatibility": round(100 * (len(required_sections) - len(missing_sections)) / len(required_sections)) if required_sections else 100,
+        "missing_requirements": missing_requirements,
+        "ranked_journals": ranked_journals,
         "relevant_topics": relevant_topics,
         "scope_gaps": scope_gaps,
         "explanation": explanation,
         "suitable": score >= 0.45,
+        "acceptance_guarantee": False,
     }
 
 
 def generate_readiness_report(document_id: str, analysis: dict | None = None, quality_analysis: dict | None = None, selected_journal: str | None = None) -> dict:
-    quality = quality_analysis or analyze_quality(document_id, analysis)
+    document = analysis or {}
+    journal_id = (selected_journal or "nature").lower()
+    journal = get_journal_rules(journal_id)
+    quality = quality_analysis or analyze_quality(document_id, document, journal_id)
+    section_types = _detected_section_types(document)
+    required_sections = set(journal.get("required_sections") or ["abstract", "introduction", "methodology", "results", "conclusion", "references"])
+    section_score = round(100 * len(required_sections & section_types) / len(required_sections)) if required_sections else 100
+    citations = document.get("citations") or []
+    references = document.get("references") or []
+    citation_issues = validate_citations(citations, references)
+    issue_count = sum(len(items) for items in citation_issues.values())
+    citation_score = 45 if not citations and not references else max(0, 100 - issue_count * 15)
+    method_text = _section_text(document, "methodology").lower()
+    method_signals = [
+        any(term in method_text for term in terms)
+        for terms in [("dataset", "data source"), ("n=", "participants", "samples", "records"),
+                      ("preprocess", "normalization", "filtering"), ("training", "train/validation", "train-test"),
+                      ("parameter", "learning rate", "epochs"), ("metric", "accuracy", "f1", "auc"),
+                      ("baseline", "compared", "comparison"), ("reproducib", "random seed", "code available")]
+    ]
+    method_score = _evidence_score(method_signals)
+    novelty = _novelty_evidence(document)
+    contribution_text = " ".join([_collect_manuscript_terms(document), _section_text(document, "results")]).lower()
+    contribution_signals = [
+        bool(document.get("title")),
+        any(term in contribution_text for term in ("contribution", "we propose", "we present", "we introduce")),
+        bool(_section_text(document, "methodology")),
+        bool(_section_text(document, "results")),
+        any(term in contribution_text for term in ("baseline", "compared with", "state-of-the-art")),
+        bool(re.search(r"\b\d+(?:\.\d+)?\s*(?:%|ms|s|seconds|accuracy|f1|auc)\b", contribution_text)),
+        any(term in contribution_text for term in ("limitation", "limitations", "future work")),
+    ]
+    contribution_score = _evidence_score(contribution_signals)
+    text = _collect_manuscript_terms(document)
+    writing_score = _evidence_score([
+        bool(document.get("abstract")),
+        3 <= len(document.get("keywords") or []) <= 8,
+        bool(document.get("paragraphs")),
+        len(text.split()) >= 500,
+        not bool(re.search(r"\b(very good|huge|obviously|clearly the best)\b", text, re.I)),
+    ])
+    journal_match = generate_journal_match(document_id, document, journal_id)
+    word_count = len(text.split())
+    formatting_checks = [
+        not journal.get("word_limit") or word_count <= journal["word_limit"],
+        not journal.get("abstract_requirements", {}).get("max_words")
+        or len(str(document.get("abstract") or "").split()) <= journal["abstract_requirements"]["max_words"],
+        not journal.get("keyword_rules", {}).get("required") or bool(document.get("keywords")),
+    ]
+    formatting_score = round(100 * sum(formatting_checks) / len(formatting_checks))
+    completeness_score = round(100 * len(required_sections & section_types) / len(required_sections)) if required_sections else 100
+    scores = {
+        "structure": section_score,
+        "citation_consistency": citation_score,
+        "research_completeness": completeness_score,
+        "methodology": method_score,
+        "technical_contribution": contribution_score,
+        "novelty_framing": novelty["novelty_score"],
+        "writing_quality": writing_score,
+        "journal_suitability": round(journal_match["score"] * 100),
+        "formatting_compliance": formatting_score,
+    }
+    overall = round(sum(scores.values()) / len(scores))
+    sections = [
+        {"name": label, "score": score, "status": "Good" if score >= 80 else "Moderate" if score >= 60 else "Needs Review", "details": detail}
+        for label, score, detail in [
+            ("Document Structure", scores["structure"], f"Detected {len(required_sections & section_types)} of {len(required_sections)} core sections."),
+            ("Citation & Reference Consistency", citation_score, f"Found {issue_count} citation/reference issue(s)."),
+            ("Research Completeness", scores["research_completeness"], "Core section coverage based on parsed headings."),
+            ("Methodology", method_score, f"Detected {sum(method_signals)} of {len(method_signals)} reproducibility evidence groups."),
+            ("Technical Contribution", contribution_score, f"Detected {sum(contribution_signals)} of {len(contribution_signals)} contribution evidence signals."),
+            ("Novelty Framing", novelty["novelty_score"], "Measures evidence and clarity in the manuscript, not global originality."),
+            ("Writing Quality", writing_score, "Rule-based indicators only; this is not a grammar proofread."),
+            ("Journal Suitability", scores["journal_suitability"], journal_match["explanation"]),
+            ("Formatting Compliance", formatting_score, f"Passed {sum(formatting_checks)} of {len(formatting_checks)} text-based journal checks."),
+        ]
+    ]
+    recommendations = []
+    for issue in citation_issues["missing_references"]:
+        recommendations.append({"category": "CRITICAL", "severity": "CRITICAL", "issue": issue["message"], "explanation": issue["message"], "suggested_action": "Add or correct the matching bibliography entry.", "affected_section": "References", "priority": 1})
+    for missing in quality.get("missing_sections", []):
+        recommendations.append({"category": "HIGH", "severity": "HIGH", "issue": f"Core section not detected: {missing}.", "explanation": "The selected journal may require this content; verify the manuscript structure.", "suggested_action": f"Add or clearly label the {missing.replace('_', ' ')} section if appropriate.", "affected_section": missing, "priority": 2})
+    for missing in analyze_novelty(document_id, document)["improvement_suggestions"]:
+        recommendations.append({"category": "MEDIUM", "severity": "MEDIUM", "issue": missing, "explanation": "The manuscript currently provides limited explicit evidence for this novelty criterion.", "suggested_action": missing, "affected_section": "Introduction", "priority": 3})
     report = {
         "document_id": document_id,
         "title": "Pre-Submission Readiness Assessment",
-        "selected_journal": selected_journal or "nature",
-        "summary": "This assessment identifies structural, methodological, and writing-related strengths and weaknesses without implying guaranteed acceptance.",
-        "sections": [
-            {"name": "Document Structure", "status": "Good", "details": "The manuscript includes a clear title, abstract, sections, and references."},
-            {"name": "Citation & Reference Issues", "status": "Needs Review", "details": "Check that each in-text citation maps to a consistent reference entry and numbering is sequential."},
-            {"name": "Research Completeness", "status": "Moderate", "details": quality.get("missing_sections", []) or "No major structural gaps detected.", "reason": "The draft should make explicit any missing experimental or comparison details."},
-            {"name": "Research Gap", "status": "Good", "details": quality.get("research_gap", "")},
-            {"name": "Methodology", "status": "Moderate", "details": "Reproducibility details can be improved with clearer dataset and setup descriptions."},
-            {"name": "Technical Contribution", "status": "Good", "details": quality.get("technical_contribution", "")},
-            {"name": "Novelty / Similar Research", "status": "Moderate", "details": "The manuscript aligns with relevant work, but the novelty framing should be sharpened."},
-            {"name": "Writing Quality", "status": "Good", "details": "The draft is readable and mostly academic in tone."},
-            {"name": "Journal Scope", "status": "Good", "details": "The topic aligns with the chosen journal's applied AI and medical-imaging themes."},
-            {"name": "Formatting Issues", "status": "Needs Review", "details": "Verify final figure/table captions and reference formatting against the selected journal rules."},
-            {"name": "Actionable Suggestions", "status": "Good", "details": "The main next step is to strengthen the methodology description, novelty framing, and contribution statement."},
-            {"name": "Final Checklist", "status": "Needs Review", "details": "Review citations, disclose limitations, and confirm all key sections are ready for final submission."},
-        ],
-        "final_checklist": [
-            "Confirm the title and abstract match the manuscript contribution.",
-            "Review citation and reference numbering consistency.",
-            "Add or improve methodological detail and baseline comparison.",
-            "Clarify novelty and contribution statements.",
-            "Assess whether journal scope and word limits are met.",
-        ],
+        "selected_journal": journal_id,
+        "overall_readiness": overall,
+        "scores": scores,
+        "summary": f"Rule-based readiness estimate: {overall}/100. Scores reflect parsed manuscript evidence and configured {journal.get('template_name', journal_id)} checks; they do not predict acceptance.",
+        "sections": sections,
+        "citation_issues": citation_issues,
+        "recommendations": sorted(recommendations, key=lambda item: item["priority"]),
+        "novelty_scope": "Internal manuscript analysis only; external scholarly similarity search is not configured.",
+        "final_checklist": [item["suggested_action"] for item in recommendations],
     }
     return report
