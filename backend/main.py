@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.ai import router as ai_router
+from backend.api.auth import router as auth_router
 from backend.api.documents import router as documents_router
 from backend.api.citations import router as citations_router
 from backend.api.generation import router as generation_router
@@ -30,6 +31,7 @@ app.add_middleware(
 )
 
 app.include_router(documents_router)
+app.include_router(auth_router)
 app.include_router(citations_router)
 app.include_router(journals_router)
 app.include_router(ai_router)

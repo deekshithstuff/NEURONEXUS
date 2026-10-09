@@ -1,5 +1,6 @@
-from backend.ai_service import analyze_contribution, analyze_methodology, analyze_novelty, analyze_writing, generate_improvements, generate_journal_match, generate_readiness_report
-from backend.database import fetch_all
+from uuid import uuid4
+
+from backend.ai_service import analyze_completeness, analyze_contribution, analyze_methodology, analyze_novelty, analyze_writing, generate_improvements, generate_journal_match, generate_readiness_report
 from backend.citation.validator import validate_citations
 from backend.ai_provider import LocalMockProvider, ai_provider_status, get_ai_provider
 from backend.main import app
@@ -7,6 +8,12 @@ from backend.journal.database import load_journal_rules
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
+account = client.post(
+    "/api/auth/register",
+    json={"name": "Analysis test", "email": f"analysis-{uuid4()}@example.test", "password": "correct-horse-battery"},
+)
+assert account.status_code == 200, account.text
+client.headers.update({"Authorization": f"Bearer {account.json()['access_token']}"})
 
 
 def test_novelty_does_not_invent_external_comparisons():
@@ -54,7 +61,7 @@ def test_dashboard_summary_counts_stored_documents():
 
     assert response.status_code == 200
     body = response.json()
-    assert body["manuscript_count"] == len(fetch_all("SELECT id FROM documents"))
+    assert body["manuscript_count"] == len(client.get("/api/documents").json()["documents"])
     assert body["analyzed_count"] <= body["manuscript_count"]
     assert body["readiness_average"] is None or 0 <= body["readiness_average"] <= 100
     assert "methodology" in body["dimension_averages"] or body["analyzed_count"] == 0
@@ -170,3 +177,27 @@ def test_unrelated_manuscript_does_not_receive_a_positive_journal_match():
     assert result["score"] == 0
     assert result["relevant_topics"] == []
     assert result["formatting_compatibility"] < 100
+
+
+def test_completeness_reports_configured_word_limits():
+    from backend.journal.rules import get_journal_rules
+
+    journal = get_journal_rules("nature")
+    abstract_limit = journal["abstract_formatting"]["max_words"]
+    analysis = {
+        "title": "Test title",
+        "abstract": " ".join(["abstract"] * (abstract_limit + 1)),
+        "sections": [{"type": "introduction", "content": " ".join(["manuscript"] * (journal["word_limit"] + 1))}],
+        "keywords": [],
+        "figures": [],
+        "tables": [],
+        "equations": [],
+    }
+
+    result = analyze_completeness("DOC-LIMITS", analysis, "nature")
+
+    assert result["word_count"] > result["word_limit"]
+    assert result["word_limit_exceeded"] is True
+    assert result["abstract_word_count"] == abstract_limit + 1
+    assert result["abstract_limit_exceeded"] is True
+from uuid import uuid4

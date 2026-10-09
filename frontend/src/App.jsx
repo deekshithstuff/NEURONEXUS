@@ -12,6 +12,7 @@ import {
   FolderOpen,
   Gauge,
   Globe2,
+  LogOut,
   Moon,
   MoreHorizontal,
   PanelLeft,
@@ -24,7 +25,8 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { buildDownloadUrl, researchApi } from './services/api'
+import AuthScreen from './AuthScreen'
+import { researchApi } from './services/api'
 
 const navigation = [
   { label: 'Dashboard', icon: Gauge, id: 'dashboard' },
@@ -58,6 +60,26 @@ const defaultAnalysis = {
   metadata: {},
 }
 
+const citationIssueCategories = [
+  'missing_references',
+  'uncited_references',
+  'duplicate_references',
+  'duplicate_reference_numbers',
+  'numbering_issues',
+  'duplicate_citation_numbers',
+  'malformed_references',
+  'invalid_structure',
+  'missing_dois',
+  'invalid_dois',
+  'author_year_mismatches',
+  'references_wrong_order',
+  'style_mismatches',
+  'inconsistent_authors',
+  'inconsistent_years',
+  'inconsistent_title_formatting',
+  'inconsistent_doi_formatting',
+]
+
 function ThemeToggle({ theme, setTheme }) {
   return (
     <button
@@ -72,7 +94,7 @@ function ThemeToggle({ theme, setTheme }) {
   )
 }
 
-function App() {
+function ResearchWorkspace({ user, onSignOut }) {
   const [theme, setTheme] = useState(() => localStorage.getItem('paperpilot-theme') || 'light')
   const [active, setActive] = useState('dashboard')
   const [showMobileMenu, setShowMobileMenu] = useState(false)
@@ -90,6 +112,7 @@ function App() {
   const [noveltyAnalysis, setNoveltyAnalysis] = useState({})
   const [methodologyAnalysis, setMethodologyAnalysis] = useState({})
   const [contributionAnalysis, setContributionAnalysis] = useState({})
+  const [completenessAnalysis, setCompletenessAnalysis] = useState({})
   const [writingAnalysis, setWritingAnalysis] = useState({})
   const [journalMatch, setJournalMatch] = useState({})
   const [improvements, setImprovements] = useState({ suggestions: [] })
@@ -137,11 +160,12 @@ function App() {
 
   const loadAnalysisModules = async (documentId, analysisPayload) => {
     const request = { document_id: documentId, analysis: analysisPayload, journal_id: selectedJournalId }
-    const [quality, novelty, methodology, contribution, journal, writing, improvement] = await Promise.all([
+    const [quality, novelty, methodology, contribution, completeness, journal, writing, improvement] = await Promise.all([
       researchApi.analyze('quality', request),
       researchApi.analyze('novelty', request),
       researchApi.analyze('methodology', request),
       researchApi.analyze('contribution', request),
+      researchApi.analyze('completeness', request),
       researchApi.matchJournal({ ...request, journal_id: selectedJournalId }),
       researchApi.analyze('writing', request),
       researchApi.generateImprovement({ ...request, focus: 'research quality' }),
@@ -155,6 +179,7 @@ function App() {
     setNoveltyAnalysis(novelty)
     setMethodologyAnalysis(methodology)
     setContributionAnalysis(contribution)
+    setCompletenessAnalysis(completeness)
     setWritingAnalysis(writing)
     setJournalMatch(journal)
     setImprovements(improvement)
@@ -181,8 +206,9 @@ function App() {
   const handleFileUpload = async (event) => {
     const file = event.target.files?.[0]
     if (!file) return
-    if (!file.name.toLowerCase().endsWith('.docx')) {
-      setUploadError('Only DOCX files are supported.')
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    if (!['docx', 'pdf'].includes(extension)) {
+      setUploadError('Choose a DOCX or text-based PDF manuscript.')
       return
     }
 
@@ -209,6 +235,7 @@ function App() {
       setStatusMessage('Upload failed — please retry.')
     } finally {
       setIsUploading(false)
+      event.target.value = ''
     }
   }
 
@@ -219,6 +246,11 @@ function App() {
 
   const currentTitle = navigation.find((item) => item.id === active)?.label
     || ({ manuscripts: 'All manuscripts', settings: 'Settings' }[active] || 'Dashboard')
+  const userInitials = (user.name || user.email)
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() || '')
+    .join('')
 
   return (
     <div className="app-shell">
@@ -232,10 +264,10 @@ function App() {
         </div>
 
         <div className="workspace-switch">
-          <div className="avatar">AR</div>
+          <div className="avatar">{userInitials}</div>
           <div>
-            <span>Alex Rivera</span>
-            <small>Personal workspace</small>
+            <span>{user.name}</span>
+            <small>{user.email}</small>
           </div>
           <ChevronDown size={15} />
         </div>
@@ -322,7 +354,11 @@ function App() {
               <CircleHelp size={18} />
             </button>
             <ThemeToggle theme={theme} setTheme={setTheme} />
-            <div className="top-avatar">AR</div>
+            <div className="top-avatar" title={user.email}>{userInitials}</div>
+            <button type="button" className="signout-button" onClick={onSignOut} title="Sign out">
+              <LogOut size={16} />
+              <span>Sign out</span>
+            </button>
           </div>
         </header>
 
@@ -388,7 +424,7 @@ function App() {
               setActive={setActive}
             />
           )}
-          {active === 'quality' && <QualityPage qualityAnalysis={qualityAnalysis} setActive={setActive} />}
+          {active === 'quality' && <QualityPage qualityAnalysis={qualityAnalysis} completenessAnalysis={completenessAnalysis} setActive={setActive} />}
           {active === 'novelty' && <NoveltyPage noveltyAnalysis={noveltyAnalysis} setActive={setActive} />}
           {active === 'methodology' && <MethodologyPage methodologyAnalysis={methodologyAnalysis} setActive={setActive} />}
           {active === 'contribution' && <ContributionPage contributionAnalysis={contributionAnalysis} setActive={setActive} />}
@@ -543,7 +579,7 @@ function Dashboard({ manuscripts, dashboardSummary, aiStatus, isLoadingManuscrip
         <label className="primary-button upload-trigger">
           <Plus size={17} />
           Upload manuscript
-          <input type="file" accept=".docx" hidden onChange={onUpload} />
+          <input type="file" accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden onChange={onUpload} />
         </label>
       </section>
 
@@ -551,12 +587,12 @@ function Dashboard({ manuscripts, dashboardSummary, aiStatus, isLoadingManuscrip
         <div className="upload-icon"><UploadCloud size={23} /></div>
         <div>
           <strong>{statusMessage}</strong>
-          <span>{uploadError || 'Upload a DOCX and the system will structure the manuscript, check citations, and run the research quality evaluation.'}</span>
+          <span>{uploadError || 'Upload a DOCX or text-based PDF and the system will structure the manuscript, check citations, and run the research quality evaluation.'}</span>
         </div>
         <label className="outline-button">
-          {isUploading ? 'Processing...' : 'Upload DOCX'}
+          {isUploading ? 'Processing...' : 'Upload DOCX / PDF'}
           <ArrowUpRight size={15} />
-          <input type="file" accept=".docx" hidden onChange={onUpload} />
+          <input type="file" accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden onChange={onUpload} />
         </label>
       </section>
 
@@ -603,12 +639,13 @@ function UploadPage({ onUpload, isUploading, statusMessage, uploadError }) {
   return (
     <section className="panel upload-panel">
       <p className="kicker">UPLOAD</p>
-      <h1>Upload DOCX manuscript</h1>
+      <h1>Upload manuscript</h1>
+      <p className="subtitle">DOCX and text-based PDF are supported. Scanned PDFs require OCR, which is not enabled.</p>
       <label className="dropzone">
         <UploadCloud size={32} />
         <span>Drag & drop your manuscript here</span>
         <strong>or click to browse</strong>
-        <input type="file" accept=".docx" onChange={onUpload} />
+        <input type="file" accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={onUpload} />
       </label>
       <div className="status-box">
         <strong>{isUploading ? 'Processing...' : 'Status'}</strong>
@@ -707,6 +744,9 @@ function AnalysisPage({ document, setActive, citationReport }) {
 
 function CitationPage({ citationReport, document, setActive }) {
   if (!document?.document_id) return <AnalysisRequired setActive={setActive} />
+  const allIssues = citationIssueCategories.flatMap((key) => (
+    (citationReport[key] || []).map((issue, index) => ({ key, issue, index }))
+  ))
   return (
     <>
       <section className="page-intro">
@@ -731,43 +771,18 @@ function CitationPage({ citationReport, document, setActive }) {
             <div><p className="kicker">ISSUES</p><h2>Reference problems</h2></div>
           </div>
           <div className="finding-list">
-            {['missing_references', 'uncited_references', 'duplicate_references', 'numbering_issues', 'duplicate_citation_numbers', 'malformed_references', 'missing_dois', 'style_mismatches'].every((key) => !(citationReport[key] || []).length) ? (
+            {allIssues.length === 0 ? (
               <div className="finding"><span className="finding-mark good"><Check size={14} /></span><div><strong>No major citation issues detected</strong><span>Reference integrity looks consistent in the current draft.</span></div></div>
             ) : (
-              <>
-                {(citationReport.missing_references || []).map((issue, idx) => (
-                  <div className="finding" key={`missing-${idx}`}>
-                    <span className="finding-mark warning">!</span>
-                    <div><strong>{issue.citation || 'Citation issue'}</strong><span>{issue.message}</span></div>
+              allIssues.map(({ key, issue, index }) => (
+                <div className="finding" key={`${key}-${index}`}>
+                  <span className="finding-mark warning">!</span>
+                  <div>
+                    <strong>{issue.citation || issue.type?.replaceAll('_', ' ') || key.replaceAll('_', ' ')}</strong>
+                    <span>{issue.message} {issue.suggestion}</span>
                   </div>
-                ))}
-                {(citationReport.uncited_references || []).map((issue, idx) => (
-                  <div className="finding" key={`uncited-${idx}`}>
-                    <span className="finding-mark warning">!</span>
-                    <div><strong>{issue.citation || 'Uncited reference'}</strong><span>{issue.message}</span></div>
-                  </div>
-                ))}
-                {(citationReport.duplicate_references || []).map((issue, idx) => (
-                  <div className="finding" key={`duplicate-${idx}`}>
-                    <span className="finding-mark neutral">•</span>
-                    <div><strong>Duplicate reference</strong><span>{issue.message}</span></div>
-                  </div>
-                ))}
-                {(citationReport.numbering_issues || []).map((issue, idx) => (
-                  <div className="finding" key={`number-${idx}`}>
-                    <span className="finding-mark warning">!</span>
-                    <div><strong>{issue.citation || 'Citation numbering issue'}</strong><span>{issue.message}</span></div>
-                  </div>
-                ))}
-                {['duplicate_citation_numbers', 'malformed_references', 'missing_dois', 'style_mismatches'].flatMap((key) => (
-                  (citationReport[key] || []).map((issue, idx) => (
-                    <div className="finding" key={`${key}-${idx}`}>
-                      <span className="finding-mark warning">!</span>
-                      <div><strong>{issue.type?.replaceAll('_', ' ') || key.replaceAll('_', ' ')}</strong><span>{issue.message} {issue.suggestion}</span></div>
-                    </div>
-                  ))
-                ))}
-              </>
+                </div>
+              ))
             )}
           </div>
         </section>
@@ -869,7 +884,7 @@ function AnalysisRequired({ setActive }) {
   )
 }
 
-function QualityPage({ qualityAnalysis, setActive }) {
+function QualityPage({ qualityAnalysis, completenessAnalysis, setActive }) {
   if (!qualityAnalysis?.document_id) return <AnalysisRequired setActive={setActive} />
   return (
     <>
@@ -897,6 +912,75 @@ function QualityPage({ qualityAnalysis, setActive }) {
             {(qualityAnalysis.suggestions || []).map((suggestion) => <li key={suggestion}>{suggestion}</li>)}
           </ul>
         </section>
+        {completenessAnalysis?.document_id && (
+          <section className="panel">
+            <div className="panel-heading"><div><p className="kicker">SELECTED JOURNAL PROFILE</p><h2>Research completeness</h2></div><span className="score-badge">{completenessAnalysis.score}/100</span></div>
+            <p className="supporting-text">{completenessAnalysis.analysis_scope}</p>
+            <div className="finding-list">
+              <div className="finding">
+                <span className={`finding-mark ${completenessAnalysis.word_limit_exceeded ? 'warning' : 'good'}`}>
+                  {completenessAnalysis.word_limit_exceeded ? '!' : <Check size={14} />}
+                </span>
+                <div>
+                  <strong>Manuscript length</strong>
+                  <span>
+                    {completenessAnalysis.word_limit
+                      ? `${completenessAnalysis.word_count} / ${completenessAnalysis.word_limit} words`
+                      : `${completenessAnalysis.word_count} words; no profile limit configured`}
+                  </span>
+                </div>
+              </div>
+              {completenessAnalysis.abstract_word_limit && (
+                <div className="finding">
+                  <span className={`finding-mark ${completenessAnalysis.abstract_limit_exceeded ? 'warning' : 'good'}`}>
+                    {completenessAnalysis.abstract_limit_exceeded ? '!' : <Check size={14} />}
+                  </span>
+                  <div>
+                    <strong>Abstract length</strong>
+                    <span>{completenessAnalysis.abstract_word_count} / {completenessAnalysis.abstract_word_limit} words</span>
+                  </div>
+                </div>
+              )}
+              {completenessAnalysis.page_limit && (
+                <div className="finding">
+                  <span className="finding-mark neutral">•</span>
+                  <div><strong>Page limit</strong><span>Configured limit: {completenessAnalysis.page_limit} pages; page count is not assessed from the parsed DOCX.</span></div>
+                </div>
+              )}
+              {(completenessAnalysis.missing_required || []).map((section) => (
+                <div className="finding" key={`required-${section}`}>
+                  <span className="finding-mark warning">!</span>
+                  <div><strong>Missing required section</strong><span>{section.replaceAll('_', ' ')}</span></div>
+                </div>
+              ))}
+              {(completenessAnalysis.missing_figure_captions || []).map((figure) => (
+                <div className="finding" key={`figure-${figure}`}>
+                  <span className="finding-mark warning">!</span>
+                  <div><strong>Missing figure caption</strong><span>{figure}</span></div>
+                </div>
+              ))}
+              {(completenessAnalysis.missing_table_captions || []).map((table) => (
+                <div className="finding" key={`table-${table}`}>
+                  <span className="finding-mark warning">!</span>
+                  <div><strong>Missing table caption</strong><span>{table}</span></div>
+                </div>
+              ))}
+              {(completenessAnalysis.unnumbered_equations || []).map((equation) => (
+                <div className="finding" key={`equation-${equation}`}>
+                  <span className="finding-mark warning">!</span>
+                  <div><strong>Equation numbering needs review</strong><span>{equation}</span></div>
+                </div>
+              ))}
+              {!(completenessAnalysis.missing_required || []).length
+                && !(completenessAnalysis.missing_figure_captions || []).length
+                && !(completenessAnalysis.missing_table_captions || []).length
+                && !(completenessAnalysis.unnumbered_equations || []).length
+                && !completenessAnalysis.word_limit_exceeded
+                && !completenessAnalysis.abstract_limit_exceeded
+                && <div className="finding"><span className="finding-mark good"><Check size={14} /></span><div><strong>No configured completeness gaps detected</strong><span>Optional sections are not treated as required.</span></div></div>}
+            </div>
+          </section>
+        )}
       </div>
     </>
   )
@@ -1175,7 +1259,8 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
         docx: 'final_manuscript.docx',
       }
       const fileName = names[format] || `manuscript.${format}`
-      const url = buildDownloadUrl(document.document_id, format)
+      const blob = await researchApi.download(document.document_id, format)
+      const url = URL.createObjectURL(blob)
       const link = globalThis.document.createElement('a')
       link.href = url
       link.download = fileName
@@ -1183,7 +1268,10 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
       link.style.display = 'none'
       globalThis.document.body.appendChild(link)
       link.click()
-      setTimeout(() => link.remove(), 1500)
+      setTimeout(() => {
+        link.remove()
+        URL.revokeObjectURL(url)
+      }, 1500)
     } catch (error) {
       setExportError(error.message || `Could not download ${format.toUpperCase()}.`)
     }
@@ -1252,6 +1340,48 @@ function Stat({ label, value, suffix = '', detail, icon: Icon, green = false }) 
       </div>
     </div>
   )
+}
+
+function App() {
+  const [user, setUser] = useState(null)
+  const [isCheckingSession, setIsCheckingSession] = useState(true)
+  const [authNotice, setAuthNotice] = useState('')
+
+  useEffect(() => {
+    if (!researchApi.hasStoredAuth()) {
+      setIsCheckingSession(false)
+      return undefined
+    }
+    researchApi.getCurrentUser()
+      .then(setUser)
+      .catch(() => {
+        researchApi.clearAuth()
+        setUser(null)
+      })
+      .finally(() => setIsCheckingSession(false))
+    return undefined
+  }, [])
+
+  const signOut = async () => {
+    let notice = ''
+    try {
+      await researchApi.signOut()
+    } catch (error) {
+      notice = `Signed out on this device, but server session revocation failed: ${error.message}`
+    } finally {
+      researchApi.clearAuth()
+      setUser(null)
+      setAuthNotice(notice)
+    }
+  }
+
+  if (isCheckingSession) {
+    return <main className="auth-loading" role="status">Checking your session…</main>
+  }
+  if (!user) {
+    return <AuthScreen onAuthenticated={setUser} notice={authNotice} />
+  }
+  return <ResearchWorkspace user={user} onSignOut={signOut} />
 }
 
 export default App

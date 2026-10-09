@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from io import BytesIO
+from uuid import uuid4
 
 import fitz
 from PIL import Image
@@ -10,9 +11,18 @@ from docx import Document
 
 from backend.generator.pdf_generator import PDFGenerator
 from backend.generator.docx_generator import DOCXGenerator
+from backend.database import connection
+from backend.document.parser import DocumentParser
 from backend.main import app
 
 client = TestClient(app)
+account = client.post(
+    "/api/auth/register",
+    json={"name": "Pipeline test", "email": f"pipeline-{uuid4()}@example.test", "password": "correct-horse-battery"},
+)
+assert account.status_code == 200, account.text
+TEST_USER_ID = account.json()["user"]["id"]
+client.headers.update({"Authorization": f"Bearer {account.json()['access_token']}"})
 
 
 def build_sample_docx(path: Path) -> None:
@@ -118,6 +128,22 @@ def test_upload_and_analysis_flow(tmp_path):
     assert report["total_citations"] >= 1
     assert report["total_references"] >= 1
 
+    completeness = client.post(
+        "/api/completeness/analyze",
+        json={"document_id": doc_id, "journal_id": "nature"},
+    )
+    assert completeness.status_code == 200, completeness.text
+    completeness_result = completeness.json()
+    assert completeness_result["journal_id"] == "nature"
+    assert "missing_required" in completeness_result
+    assert "word_limit_exceeded" in completeness_result
+
+    invalid_profile = client.post(
+        "/api/completeness/analyze",
+        json={"document_id": doc_id, "journal_id": "not-a-profile"},
+    )
+    assert invalid_profile.status_code == 404
+
 
 def test_upload_rejects_corrupted_docx_without_storing_it():
     response = client.post(
@@ -127,6 +153,82 @@ def test_upload_rejects_corrupted_docx_without_storing_it():
 
     assert response.status_code == 400
     assert "corrupted" in response.json()["detail"].lower()
+
+
+def test_upload_and_analyze_text_pdf(tmp_path):
+    pdf_path = tmp_path / "pdf_manuscript.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_textbox(
+        fitz.Rect(48, 48, 540, 760),
+        "A Text-Extractable PDF Manuscript\n\n"
+        "Abstract\n"
+        "This synthetic PDF demonstrates manuscript parsing and citation detection.\n\n"
+        "Introduction\n"
+        "Prior work motivates this study with a clearly formatted citation: Smith et al. (2024).\n\n"
+        "Methods\n"
+        "We use a clearly documented illustrative method with a held-out evaluation set.\n\n"
+        "Results\n"
+        "The synthetic example reports an illustrative result.\n\n"
+        "Conclusion\n"
+        "This fictional example is only for testing PDF upload.\n\n"
+        "References\n"
+        "Smith, J. (2024). A synthetic reference for parser tests. Example Journal.",
+        fontsize=11,
+        lineheight=1.4,
+    )
+    pdf.save(pdf_path)
+    pdf.close()
+
+    with pdf_path.open("rb") as file_handle:
+        upload = client.post(
+            "/api/documents/upload",
+            files={"file": ("pdf_manuscript.pdf", file_handle, "application/pdf")},
+        )
+    assert upload.status_code == 200, upload.text
+    document_id = upload.json()["document_id"]
+
+    analysis = client.post(
+        f"/api/documents/{document_id}/analyze",
+        json={"journal_id": "nature"},
+    )
+    assert analysis.status_code == 200, analysis.text
+    body = analysis.json()
+    assert body["title"] == "A Text-Extractable PDF Manuscript"
+    assert body["metadata"]["source_format"] == "pdf"
+    assert body["metadata"]["page_count"] == 1
+    assert any(section["type"] == "introduction" for section in body["sections"])
+    assert any(citation["citation_type"] == "author_year" for citation in body["citations"])
+    assert body["references"]
+
+    generated = client.post(
+        f"/api/documents/{document_id}/generate",
+        json={"journal_id": "nature"},
+    )
+    assert generated.status_code == 200, generated.text
+    assert generated.json()["status"] == "generated"
+    assert any("source was a PDF" in warning for warning in generated.json()["formatting_warnings"])
+
+
+def test_scanned_pdf_without_text_reports_ocr_limitation(tmp_path):
+    pdf_path = tmp_path / "scanned.pdf"
+    pdf = fitz.open()
+    pdf.new_page()
+    pdf.save(pdf_path)
+    pdf.close()
+
+    with pdf_path.open("rb") as file_handle:
+        upload = client.post(
+            "/api/documents/upload",
+            files={"file": ("scanned.pdf", file_handle, "application/pdf")},
+        )
+    assert upload.status_code == 200, upload.text
+    analysis = client.post(
+        f"/api/documents/{upload.json()['document_id']}/analyze",
+        json={"journal_id": "nature"},
+    )
+    assert analysis.status_code == 422
+    assert "OCR" in analysis.json()["detail"]
 
 
 def test_author_year_citations_in_numbered_sections(tmp_path):
@@ -171,6 +273,19 @@ def test_author_year_citations_match_references():
     body = report.json()
     assert body["missing_references"] == []
     assert body["uncited_references"] == []
+
+
+def test_citations_are_ordered_by_document_position_and_reject_unsafe_ranges():
+    parser = DocumentParser()
+
+    citations = parser._citations(
+        ["[1] Smith et al. (2024) and [2]", "[1-999999999999999999999999]"],
+        [],
+    )
+
+    assert [citation.text for citation in citations[:3]] == ["[1]", "Smith et al. (2024)", "[2]"]
+    assert citations[0].position < citations[1].position < citations[2].position
+    assert citations[3].reference_ids == []
 
 
 def test_journal_rules_and_generation_flow(tmp_path):
@@ -303,10 +418,22 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
         ],
     }
 
-    result_a_nature = client.post("/api/journal/match", json={"document_id": "DOC-A", "analysis": manuscript_a, "journal_id": "nature"})
-    result_b_nature = client.post("/api/journal/match", json={"document_id": "DOC-B", "analysis": manuscript_b, "journal_id": "nature"})
-    result_a_ieee = client.post("/api/journal/match", json={"document_id": "DOC-A", "analysis": manuscript_a, "journal_id": "ieee"})
-    result_b_ieee = client.post("/api/journal/match", json={"document_id": "DOC-B", "analysis": manuscript_b, "journal_id": "ieee"})
+    document_ids = {
+        name: f"DOC-{uuid4().hex[:8].upper()}"
+        for name in ("a", "b", "empty", "unsupported")
+    }
+    with connection() as conn:
+        for document_id in document_ids.values():
+            conn.execute(
+                "INSERT OR IGNORE INTO documents (id, user_id, filename, original_path, status) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (document_id, TEST_USER_ID, f"{document_id}.docx", "", "uploaded"),
+            )
+
+    result_a_nature = client.post("/api/journal/match", json={"document_id": document_ids["a"], "analysis": manuscript_a, "journal_id": "nature"})
+    result_b_nature = client.post("/api/journal/match", json={"document_id": document_ids["b"], "analysis": manuscript_b, "journal_id": "nature"})
+    result_a_ieee = client.post("/api/journal/match", json={"document_id": document_ids["a"], "analysis": manuscript_a, "journal_id": "ieee"})
+    result_b_ieee = client.post("/api/journal/match", json={"document_id": document_ids["b"], "analysis": manuscript_b, "journal_id": "ieee"})
 
     assert result_a_nature.status_code == 200
     assert result_b_nature.status_code == 200
@@ -345,7 +472,7 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
     assert a_nature["acceptance_guarantee"] is False
 
     missing = {"title": "", "abstract": "", "keywords": []}
-    empty_match = client.post("/api/journal/match", json={"document_id": "DOC-EMPTY", "analysis": missing, "journal_id": "nature"})
+    empty_match = client.post("/api/journal/match", json={"document_id": document_ids["empty"], "analysis": missing, "journal_id": "nature"})
     assert empty_match.status_code == 200
     empty_body = empty_match.json()
     assert empty_body["journal_id"] == "nature"
@@ -354,5 +481,5 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
     assert isinstance(empty_body["scope_gaps"], list)
     assert empty_body["score"] == 0
 
-    unsupported = client.post("/api/journal/match", json={"document_id": "DOC-X", "analysis": manuscript_a, "journal_id": "missing-profile"})
+    unsupported = client.post("/api/journal/match", json={"document_id": document_ids["unsupported"], "analysis": manuscript_a, "journal_id": "missing-profile"})
     assert unsupported.status_code == 404

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from starlette.responses import FileResponse
 
 from backend.ai_service import generate_readiness_report
 from backend.config import OUTPUT_DIR
-from backend.database import connection, fetch_one
+from backend.database import connection
 from backend.formatting.formatter import apply_formatting
 from backend.generator.docx_generator import DOCXGenerator
 from backend.generator.package_generator import SubmissionPackageGenerator
 from backend.generator.pdf_generator import PDFGenerator
 from backend.journal.rules import get_journal_rules
+from backend.security import get_current_user, get_owned_document
 
-router = APIRouter(prefix="/api/documents")
+router = APIRouter(prefix="/api/documents", dependencies=[Depends(get_current_user)])
 
 
 def _persist_journal(document_id: str, journal_id: str) -> None:
@@ -26,9 +28,13 @@ def _persist_journal(document_id: str, journal_id: str) -> None:
 
 
 @router.post("/{document_id}/format")
-async def format_document(document_id: str, payload: dict | None = None):
-    document = fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
-    if not document or not document["analysis_json"]:
+async def format_document(
+    document_id: str,
+    payload: dict | None = None,
+    user: dict = Depends(get_current_user),
+):
+    document = get_owned_document(document_id, user["id"])
+    if not document["analysis_json"]:
         raise HTTPException(status_code=404, detail="Document not found or not analyzed.")
     analysis = json.loads(document["analysis_json"])
     payload = payload or {}
@@ -39,13 +45,21 @@ async def format_document(document_id: str, payload: dict | None = None):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     _persist_journal(document_id, journal_id)
     formatted = apply_formatting(analysis, journal_rules)
+    if Path(document["original_path"]).suffix.lower() == ".pdf":
+        formatted.warnings.append(
+            "The source is a PDF; export reconstruction may not preserve the original layout, figures, or tables."
+        )
     return formatted.model_dump()
 
 
 @router.post("/{document_id}/generate")
-async def generate_document(document_id: str, payload: dict | None = None):
-    document = fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
-    if not document or not document["analysis_json"]:
+async def generate_document(
+    document_id: str,
+    payload: dict | None = None,
+    user: dict = Depends(get_current_user),
+):
+    document = get_owned_document(document_id, user["id"])
+    if not document["analysis_json"]:
         raise HTTPException(status_code=404, detail="Document not found or not analyzed.")
     analysis = json.loads(document["analysis_json"])
     payload = payload or {}
@@ -62,7 +76,18 @@ async def generate_document(document_id: str, payload: dict | None = None):
     readiness_pdf = output_dir / "readiness_report.pdf"
 
     formatting_result = apply_formatting(analysis, journal_rules)
-    DOCXGenerator().generate(analysis, docx_path, journal_rules, source_path=document["original_path"])
+    source_path = Path(document["original_path"])
+    source_is_pdf = source_path.suffix.lower() == ".pdf"
+    DOCXGenerator().generate(
+        analysis,
+        docx_path,
+        journal_rules,
+        source_path=source_path if not source_is_pdf else None,
+    )
+    if source_is_pdf:
+        formatting_result.warnings.append(
+            "The source was a PDF; the DOCX export was reconstructed from extracted text and may not preserve the original layout, figures, or tables."
+        )
     PDFGenerator().generate(docx_path, pdf_path)
     readiness = generate_readiness_report(document_id, analysis, selected_journal=journal_id)
     score_lines = [f"- {name.replace('_', ' ').title()}: {score}/100" for name, score in readiness["scores"].items()]
@@ -132,7 +157,8 @@ async def generate_document(document_id: str, payload: dict | None = None):
 
 
 @router.get("/{document_id}/download/docx")
-async def download_docx(document_id: str):
+async def download_docx(document_id: str, user: dict = Depends(get_current_user)):
+    get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "final_manuscript.docx"
     if not target.exists():
         raise HTTPException(status_code=404, detail="DOCX output not yet generated.")
@@ -140,7 +166,8 @@ async def download_docx(document_id: str):
 
 
 @router.get("/{document_id}/download/pdf")
-async def download_pdf(document_id: str):
+async def download_pdf(document_id: str, user: dict = Depends(get_current_user)):
+    get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "final_manuscript.pdf"
     if not target.exists():
         raise HTTPException(status_code=404, detail="PDF output not yet generated.")
@@ -148,7 +175,8 @@ async def download_pdf(document_id: str):
 
 
 @router.get("/{document_id}/download/report")
-async def download_report(document_id: str):
+async def download_report(document_id: str, user: dict = Depends(get_current_user)):
+    get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "readiness_report.pdf"
     if not target.exists():
         raise HTTPException(status_code=404, detail="Readiness report not yet generated.")
@@ -156,7 +184,8 @@ async def download_report(document_id: str):
 
 
 @router.get("/{document_id}/download/zip")
-async def download_zip(document_id: str):
+async def download_zip(document_id: str, user: dict = Depends(get_current_user)):
+    get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "submission_package.zip"
     if not target.exists():
         raise HTTPException(status_code=404, detail="Submission package not yet generated.")

@@ -175,10 +175,7 @@ def analyze_quality(document_id: str, analysis: dict | None = None, journal_id: 
     document = analysis or {}
     paragraphs = document.get("paragraphs") or [""]
     body = _normalize_text(document.get("abstract") or paragraphs[0])
-    try:
-        journal = get_journal_rules((journal_id or "nature").lower())
-    except ValueError:
-        journal = get_journal_rules("nature")
+    journal = get_journal_rules((journal_id or "nature").lower())
     sections = _detected_section_types(document)
     required_sections = journal.get("required_sections") or ["abstract", "introduction", "methodology", "results", "conclusion", "references"]
     missing = [required for required in required_sections if required not in sections]
@@ -309,6 +306,68 @@ def analyze_novelty(document_id: str, analysis: dict | None = None) -> dict:
     }
 
 
+def analyze_completeness(document_id: str, analysis: dict | None = None, journal_id: str | None = None) -> dict:
+    document = analysis or {}
+    journal = get_journal_rules((journal_id or "nature").lower())
+    detected = _detected_section_types(document)
+    if document.get("title"):
+        detected.add("title")
+    if document.get("abstract"):
+        detected.add("abstract")
+    if document.get("keywords"):
+        detected.add("keywords")
+    if document.get("references"):
+        detected.add("references")
+    intro = _section_text(document, "introduction").lower()
+    if any(term in intro for term in ("research gap", "little is known", "few studies", "limited work", "has not been", "remains unexplored")):
+        detected.add("research_gap")
+    canonical = [
+        "title", "abstract", "keywords", "introduction", "related_work", "research_gap",
+        "methodology", "results", "discussion", "conclusion", "limitations", "future_work", "references",
+    ]
+    required = list(journal.get("required_sections") or [])
+    optional = list(journal.get("optional_sections") or [])
+    missing_required = [item for item in required if item not in detected]
+    present_optional = [item for item in optional if item in detected]
+    missing_optional = [item for item in optional if item not in detected]
+    figure_warnings = [figure.get("id") for figure in document.get("figures") or [] if isinstance(figure, dict) and not figure.get("caption")]
+    table_warnings = [table.get("id") for table in document.get("tables") or [] if isinstance(table, dict) and not table.get("caption")]
+    unnumbered_equations = [equation.get("id") for equation in document.get("equations") or [] if isinstance(equation, dict) and not equation.get("number")]
+    word_count = len(_collect_manuscript_terms(document).split())
+    word_limit = journal.get("word_limit")
+    abstract_limit = (journal.get("abstract_formatting") or {}).get("max_words")
+    abstract_word_count = len(str(document.get("abstract") or "").split())
+    word_limit_exceeded = bool(word_limit and word_count > word_limit)
+    abstract_limit_exceeded = bool(abstract_limit and abstract_word_count > abstract_limit)
+    score = round(100 * (len(required) - len(missing_required)) / len(required)) if required else 100
+    return {
+        "document_id": document_id,
+        "module": "completeness",
+        "score": score,
+        "journal_id": journal.get("journal_id"),
+        "journal_name": journal.get("journal_name"),
+        "canonical_sections": canonical,
+        "required_sections": required,
+        "optional_sections": optional,
+        "detected_sections": sorted(item for item in detected if item in set(canonical + required + optional)),
+        "missing_required": missing_required,
+        "present_optional": present_optional,
+        "missing_optional": missing_optional,
+        "missing_figure_captions": figure_warnings,
+        "missing_table_captions": table_warnings,
+        "unnumbered_equations": unnumbered_equations,
+        "word_count": word_count,
+        "word_limit": word_limit,
+        "word_limit_exceeded": word_limit_exceeded,
+        "abstract_word_count": abstract_word_count,
+        "abstract_word_limit": abstract_limit,
+        "abstract_limit_exceeded": abstract_limit_exceeded,
+        "page_limit": journal.get("page_limit"),
+        "page_limit_status": "not_assessed" if journal.get("page_limit") else "not_applicable",
+        "analysis_scope": f"Section coverage is judged against the selected {journal.get('template_name')} required/optional lists; not every manuscript type needs every canonical section.",
+    }
+
+
 def analyze_writing(document_id: str, analysis: dict | None = None) -> dict:
     doc = analysis or {}
     text = "\n".join(doc.get("paragraphs") or []) or "\n".join(
@@ -317,18 +376,40 @@ def analyze_writing(document_id: str, analysis: dict | None = None) -> dict:
     issues = []
     findings = []
     informal_terms = ("obviously", "awesome", "huge", "a lot of", "kind of")
+    vague_terms = ("various", "several", "some studies", "many researchers", "significant")
+    seen_sentences: list[str] = []
     for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
         words = sentence.split()
         if not sentence:
             continue
+        lower = sentence.lower()
         if len(words) > 35:
             problem = f"Long sentence ({len(words)} words) may be difficult to follow."
             issues.append(problem)
             findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Consider splitting at a clause boundary while preserving the same claims and relationships.", "reason": "Shorter sentences can make technical arguments easier to evaluate."})
-        if any(term in sentence.lower() for term in informal_terms):
+        if any(term in lower for term in informal_terms):
             problem = "Potentially informal or vague wording was detected."
             issues.append(problem)
             findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Replace the flagged wording with the precise technical term intended by the authors.", "reason": "Specific terminology is easier to interpret and verify."})
+        if any(term in lower for term in vague_terms) and not re.search(r"\d", sentence):
+            problem = "Vague quantitative language without a number or cited source."
+            issues.append(problem)
+            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Replace vague quantity words with the measured value, sample size, or cited evidence.", "reason": "Reviewers need inspectable quantities rather than unspecified magnitude."})
+        if re.search(r"\b(outperforms|significantly better|clearly superior)\b", lower) and not re.search(r"\d", sentence):
+            problem = "Unsupported comparative claim without a reported quantity."
+            issues.append(problem)
+            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Attach the comparison to a metric, baseline, and measured difference.", "reason": "Comparative claims should be tied to reported evidence."})
+        if re.search(r"\b(?:is|are|was|were|be|been|being)\s+\w+ed\b", lower) and len(words) > 18:
+            problem = "Long passive construction may hide the actor or method."
+            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "If the actor matters, recast in active voice without changing the claim.", "reason": "Active voice can make methods and responsibility clearer."})
+        normalized = re.sub(r"\s+", " ", lower)
+        if normalized in seen_sentences:
+            problem = "Repeated sentence or near-duplicate wording."
+            issues.append(problem)
+            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Keep one instance and delete the repeated sentence.", "reason": "Redundant sentences add length without new evidence."})
+        seen_sentences.append(normalized)
+        if len(findings) >= 20:
+            break
     if not doc.get("abstract") and "abstract" not in _detected_section_types(doc):
         issues.append("No abstract text or abstract section was detected.")
     if len(doc.get("keywords") or []) < 3:
@@ -349,32 +430,67 @@ def analyze_writing(document_id: str, analysis: dict | None = None) -> dict:
     }
 
 
-def generate_improvements(document_id: str, analysis: dict | None = None, focus: str | None = None) -> dict:
+def generate_improvements(document_id: str, analysis: dict | None = None, focus: str | None = None, journal_id: str | None = None) -> dict:
     doc = analysis or {}
     title = doc.get("title") or "Untitled manuscript"
-    section_types = _detected_section_types(doc)
-    recommendations: list[tuple[str, str, str]] = []
-    if not doc.get("abstract") and "abstract" not in section_types:
-        recommendations.append(("abstract", "Add an abstract summarizing the research question, method, key results, and conclusion.", "No abstract text or abstract section was detected."))
-    if len(doc.get("keywords") or []) < 3:
-        recommendations.append(("keywords", "Add a concise set of topic-specific keywords if required by the selected journal.", "Fewer than three keywords were parsed."))
+    completeness = analyze_completeness(document_id, doc, journal_id)
+    writing = analyze_writing(document_id, doc)
+    method_review = analyze_methodology(document_id, doc)
+    citation_style = get_journal_rules((journal_id or "nature").lower()).get("citation_style")
+    citation_issues = validate_citations(
+        doc.get("citations") or [],
+        doc.get("references") or [],
+        citation_style,
+    )
+    ranked: list[dict] = []
+    for issue in citation_issues["missing_references"]:
+        ranked.append(_recommendation("CRITICAL", "References", issue["message"], "Add or correct the matching bibliography entry.", issue["message"]))
+    for issue_group, issues in citation_issues.items():
+        if issue_group == "missing_references":
+            continue
+        for issue in issues:
+            severity = str(issue.get("severity") or "medium").upper()
+            category = severity if severity in {"CRITICAL", "HIGH", "MEDIUM", "LOW"} else "MEDIUM"
+            ranked.append(_recommendation(
+                category,
+                "References",
+                issue["message"],
+                issue.get("suggestion") or "Review the bibliography against the selected journal's reference requirements.",
+                issue["message"],
+                issue.get("citation"),
+            ))
+    for missing in completeness["missing_required"]:
+        ranked.append(_recommendation("HIGH", missing, f"Required section not detected: {missing}.", f"Add or clearly label the {missing.replace('_', ' ')} section if it is required by the selected profile.", "The selected journal profile lists this among required sections."))
+    if completeness["missing_figure_captions"]:
+        ranked.append(_recommendation("HIGH", "Figures", f"Missing figure captions: {', '.join(completeness['missing_figure_captions'])}.", "Add a caption below each figure.", "Parsed figures have no caption text."))
+    if completeness["missing_table_captions"]:
+        ranked.append(_recommendation("HIGH", "Tables", f"Missing table captions: {', '.join(completeness['missing_table_captions'])}.", "Add a caption above each table.", "Parsed tables have no caption text."))
+    for missing in method_review["missing_information"][:6]:
+        ranked.append(_recommendation("HIGH", "methodology", f"Methodology does not clearly identify {missing.lower()}.", f"Report {missing.lower()} where applicable.", f"The methodology text does not clearly identify {missing.lower()}."))
     intro = _section_text(doc, "introduction").lower()
     if intro and not any(term in intro for term in ("research gap", "little is known", "few studies", "limited work", "has not been")):
-        recommendations.append(("introduction", "State the research gap and distinguish it from the cited prior work.", "No explicit research-gap signal was detected in the introduction."))
-    method_review = analyze_methodology(document_id, doc)
-    for missing in method_review["missing_information"]:
-        recommendations.append(("methodology", f"Report {missing.lower()} where applicable to make the study assessable and reproducible.", f"The methodology text does not clearly identify {missing.lower()}."))
+        ranked.append(_recommendation("MEDIUM", "introduction", "No explicit research-gap signal was detected in the introduction.", "State the research gap and distinguish it from cited prior work.", "Novelty framing is weaker without an explicit gap statement."))
+    if completeness["unnumbered_equations"]:
+        ranked.append(_recommendation("MEDIUM", "Equations", f"Unnumbered equations: {', '.join(completeness['unnumbered_equations'])}.", "Number displayed equations according to the selected journal profile.", "Parsed equations do not include a visible number."))
+    if completeness["word_limit_exceeded"]:
+        ranked.append(_recommendation("HIGH", "Manuscript", f"Manuscript exceeds the configured word limit ({completeness['word_count']} / {completeness['word_limit']}).", "Shorten the manuscript to the selected profile's word limit and recheck the count.", "The selected journal profile has a configured word limit."))
+    if completeness["abstract_limit_exceeded"]:
+        ranked.append(_recommendation("MEDIUM", "Abstract", f"Abstract exceeds the configured word limit ({completeness['abstract_word_count']} / {completeness['abstract_word_limit']}).", "Edit the abstract to meet the selected profile's word limit.", "The selected journal profile has a configured abstract limit."))
+    for finding in writing["sentence_findings"][:5]:
+        ranked.append(_recommendation("LOW", "writing", finding["problem"], finding["suggested_improvement"], finding["reason"], finding["original"]))
 
     suggestions = []
-    for index, (section_name, action, reason) in enumerate(recommendations, start=1):
-        source = _section_text(doc, section_name)
-        first_sentence = re.split(r"(?<=[.!?])\s+", source.strip(), maxsplit=1)[0] if source.strip() else ""
+    for index, item in enumerate(ranked, start=1):
         suggestions.append({
             "id": f"improvement-{index}",
-            "section": section_name,
-            "original": first_sentence or "No source sentence found; this recommendation concerns missing content.",
-            "suggested": action,
-            "reason": reason,
+            "category": item["category"],
+            "severity": item["severity"],
+            "priority": item["priority"],
+            "section": item["affected_section"],
+            "issue": item["issue"],
+            "original": item["original"],
+            "suggested": item["suggested_action"],
+            "reason": item["explanation"],
             "action_type": "recommendation",
         })
     return {
@@ -391,47 +507,94 @@ def generate_improvements(document_id: str, analysis: dict | None = None, focus:
 def generate_journal_match(document_id: str, analysis: dict | None = None, journal_id: str | None = None) -> dict:
     journal_key = (journal_id or "nature").lower()
     journal = get_journal_rules(journal_key)
-
-    manuscript_text = _collect_manuscript_terms(analysis)
-    score, relevant_topics, scope_gaps = _match_score_for_topics(manuscript_text, journal)
-
-    if not scope_gaps:
-        scope_gaps = ["The manuscript topic is broadly aligned with the journal's scope; no major mismatch detected, but a clearer framing may still improve fit."]
-
-    if not manuscript_text.strip():
-        score = 0.0
-        relevant_topics = []
-        scope_gaps = ["The manuscript content is missing, so journal scope compatibility could not be assessed from the document itself."]
-
-    explanation = (
-        f"The manuscript shows strongest topic alignment with {', '.join(relevant_topics) if relevant_topics else 'general applied research'}. "
-        f"The selected journal emphasizes {journal.get('journal_name', 'the journal')}'s technical focus on {journal.get('scope_summary', 'applied research and technical methods')}. "
-        f"This score reflects the overlap between the manuscript's key terms and the journal's actual scope rather than a static default.")
-
-    required_sections = set(journal.get("required_sections") or [])
-    section_types = _detected_section_types(analysis)
-    missing_sections = required_sections - section_types
-    missing_requirements = sorted(missing_sections)
+    document = analysis or {}
+    manuscript_text = _collect_manuscript_terms(document)
+    article_type = str(
+        document.get("article_type")
+        or document.get("metadata", {}).get("article_type")
+        or ""
+    ).strip()
+    section_types = _detected_section_types(document)
     word_count = len(manuscript_text.split())
-    word_limit = journal.get("word_limit")
-    if word_limit and word_count > word_limit:
-        missing_requirements.append(f"Word limit exceeded: {word_count} words versus {word_limit} configured.")
-    abstract_limit = journal.get("abstract_formatting", {}).get("max_words")
-    abstract_words = len(str((analysis or {}).get("abstract") or "").split())
-    if abstract_limit and abstract_words > abstract_limit:
-        missing_requirements.append(f"Abstract exceeds configured limit: {abstract_words} words versus {abstract_limit}.")
-    article_type = (analysis or {}).get("article_type") or (analysis or {}).get("metadata", {}).get("article_type")
+    abstract_words = len(str(document.get("abstract") or "").split())
+
+    def profile_metrics(candidate: dict) -> dict:
+        scope_score, topics, gaps = _match_score_for_topics(manuscript_text, candidate)
+        required = set(candidate.get("required_sections") or [])
+        missing_sections = sorted(required - section_types)
+        word_limit = candidate.get("word_limit")
+        abstract_limit = (candidate.get("abstract_formatting") or {}).get("max_words")
+        keyword_rules = candidate.get("keyword_rules") or {}
+        formatting_checks = [
+            (not required or not missing_sections),
+            (not word_limit or word_count <= word_limit),
+            (not abstract_limit or abstract_words <= abstract_limit),
+            (not keyword_rules.get("required") or bool(document.get("keywords"))),
+        ]
+        formatting_score = sum(formatting_checks) / len(formatting_checks)
+        expected_article = str(candidate.get("article_type") or "").strip().lower()
+        article_match = None
+        if article_type and expected_article:
+            article_match = (
+                article_type.lower() == expected_article
+                or article_type.lower() in expected_article
+                or expected_article in article_type.lower()
+            )
+        article_score = 1.0 if article_match is not False else 0.0
+        suitability = round(
+            (scope_score * 0.65) + (formatting_score * 0.25) + (article_score * 0.10),
+            4,
+        )
+        requirements = [f"Required section not detected: {name}." for name in missing_sections]
+        if word_limit and word_count > word_limit:
+            requirements.append(f"Word limit exceeded: {word_count} words versus {word_limit} configured.")
+        if abstract_limit and abstract_words > abstract_limit:
+            requirements.append(f"Abstract exceeds configured limit: {abstract_words} words versus {abstract_limit}.")
+        if keyword_rules.get("required") and not document.get("keywords"):
+            requirements.append("The selected profile requires keywords, but none were detected.")
+        if article_match is False:
+            requirements.append(f"Article type '{article_type}' does not match the configured '{expected_article}' profile.")
+        if gaps:
+            scope_gaps = gaps
+        elif not manuscript_text.strip():
+            scope_gaps = ["The manuscript content is missing, so journal scope compatibility could not be assessed from the document itself."]
+        else:
+            scope_gaps = ["The manuscript topic is broadly aligned with the journal's scope; a clearer framing may still improve fit."]
+        return {
+            "scope_score": scope_score,
+            "topics": topics,
+            "scope_gaps": scope_gaps,
+            "missing_sections": missing_sections,
+            "requirements": requirements,
+            "article_type_match": article_match,
+            "formatting_score": round(formatting_score * 100),
+            "suitability_score": suitability,
+        }
+
+    selected = profile_metrics(journal)
+    score = selected["scope_score"]
+    relevant_topics = selected["topics"]
+    scope_gaps = selected["scope_gaps"]
+    explanation = (
+        f"Scope match is {round(score * 100)}% based on manuscript-topic overlap. "
+        f"Journal suitability also considers required sections, configured length/keyword rules, and article type. "
+        f"{journal.get('profile_basis', 'Profile basis not specified')}"
+    )
     ranked_journals = []
     for candidate in get_available_journals():
-        candidate_text = _collect_manuscript_terms(analysis)
-        candidate_score, candidate_topics, _ = _match_score_for_topics(candidate_text, candidate)
+        metrics = profile_metrics(candidate)
         ranked_journals.append({
             "journal_id": candidate["journal_id"],
             "journal_name": candidate["journal_name"],
-            "score": candidate_score,
-            "relevant_topics": candidate_topics,
+            "score": metrics["suitability_score"],
+            "suitability_score": metrics["suitability_score"],
+            "scope_match": metrics["scope_score"],
+            "formatting_compatibility": metrics["formatting_score"],
+            "article_type_match": metrics["article_type_match"],
+            "missing_requirements": metrics["requirements"],
+            "relevant_topics": metrics["topics"],
         })
-    ranked_journals.sort(key=lambda item: item["score"], reverse=True)
+    ranked_journals.sort(key=lambda item: (item["score"], item["scope_match"]), reverse=True)
     return {
         "document_id": document_id,
         "journal_id": journal_key,
@@ -439,14 +602,15 @@ def generate_journal_match(document_id: str, analysis: dict | None = None, journ
         "scope_match": score,
         "topic_match": score,
         "article_type": article_type or "not provided",
-        "article_type_match": None if not article_type else article_type.lower() == str(journal.get("article_type", "")).lower(),
-        "formatting_compatibility": round(100 * (len(required_sections) - len(missing_sections)) / len(required_sections)) if required_sections else 100,
-        "missing_requirements": missing_requirements,
+        "article_type_match": selected["article_type_match"],
+        "formatting_compatibility": selected["formatting_score"],
+        "suitability_score": selected["suitability_score"],
+        "missing_requirements": selected["requirements"],
         "ranked_journals": ranked_journals,
         "relevant_topics": relevant_topics,
         "scope_gaps": scope_gaps,
         "explanation": explanation,
-        "suitable": score >= 0.45,
+        "suitable": selected["suitability_score"] >= 0.45,
         "acceptance_guarantee": False,
     }
 
@@ -461,48 +625,36 @@ def generate_readiness_report(document_id: str, analysis: dict | None = None, qu
     section_score = round(100 * len(required_sections & section_types) / len(required_sections)) if required_sections else 100
     citations = document.get("citations") or []
     references = document.get("references") or []
-    citation_issues = validate_citations(citations, references)
+    citation_issues = validate_citations(citations, references, journal.get("citation_style"))
     issue_count = sum(len(items) for items in citation_issues.values())
-    citation_score = 45 if not citations and not references else max(0, 100 - issue_count * 15)
-    method_text = _section_text(document, "methodology").lower()
-    method_signals = [
-        any(term in method_text for term in terms)
-        for terms in [("dataset", "data source"), ("n=", "participants", "samples", "records"),
-                      ("preprocess", "normalization", "filtering"), ("training", "train/validation", "train-test"),
-                      ("parameter", "learning rate", "epochs"), ("metric", "accuracy", "f1", "auc"),
-                      ("baseline", "compared", "comparison"), ("reproducib", "random seed", "code available")]
-    ]
-    method_score = _evidence_score(method_signals)
+    severity_penalty = sum(
+        {"high": 20, "medium": 8, "low": 3}.get(str(issue.get("severity", "")).lower(), 0)
+        for items in citation_issues.values()
+        for issue in items
+    )
+    citation_score = 0 if not citations and not references else max(0, 100 - severity_penalty)
+    methodology = analyze_methodology(document_id, document)
+    method_score = methodology["score"]
     novelty = _novelty_evidence(document)
-    contribution_text = " ".join([_collect_manuscript_terms(document), _section_text(document, "results")]).lower()
-    contribution_signals = [
-        bool(document.get("title")),
-        any(term in contribution_text for term in ("contribution", "we propose", "we present", "we introduce")),
-        bool(_section_text(document, "methodology")),
-        bool(_section_text(document, "results")),
-        any(term in contribution_text for term in ("baseline", "compared with", "state-of-the-art")),
-        bool(re.search(r"\b\d+(?:\.\d+)?\s*(?:%|ms|s|seconds|accuracy|f1|auc)\b", contribution_text)),
-        any(term in contribution_text for term in ("limitation", "limitations", "future work")),
-    ]
-    contribution_score = _evidence_score(contribution_signals)
+    contribution = analyze_contribution(document_id, document)
+    contribution_score = contribution["technical_contribution_score"]
     text = _collect_manuscript_terms(document)
-    writing_score = _evidence_score([
-        bool(document.get("abstract")),
-        3 <= len(document.get("keywords") or []) <= 8,
-        bool(document.get("paragraphs")),
-        len(text.split()) >= 500,
-        not bool(re.search(r"\b(very good|huge|obviously|clearly the best)\b", text, re.I)),
-    ])
+    writing = analyze_writing(document_id, document)
+    writing_score = writing["score"]
+    completeness = analyze_completeness(document_id, document, journal_id)
     journal_match = generate_journal_match(document_id, document, journal_id)
     word_count = len(text.split())
+    abstract_limit = (journal.get("abstract_formatting") or {}).get("max_words")
     formatting_checks = [
         not journal.get("word_limit") or word_count <= journal["word_limit"],
-        not journal.get("abstract_requirements", {}).get("max_words")
-        or len(str(document.get("abstract") or "").split()) <= journal["abstract_requirements"]["max_words"],
-        not journal.get("keyword_rules", {}).get("required") or bool(document.get("keywords")),
+        not abstract_limit or len(str(document.get("abstract") or "").split()) <= abstract_limit,
+        not (journal.get("keyword_rules") or {}).get("required") or bool(document.get("keywords")),
+        not completeness["missing_figure_captions"],
+        not completeness["missing_table_captions"],
+        not completeness["unnumbered_equations"],
     ]
     formatting_score = round(100 * sum(formatting_checks) / len(formatting_checks))
-    completeness_score = round(100 * len(required_sections & section_types) / len(required_sections)) if required_sections else 100
+    completeness_score = completeness["score"]
     scores = {
         "structure": section_score,
         "citation_consistency": citation_score,
@@ -511,7 +663,7 @@ def generate_readiness_report(document_id: str, analysis: dict | None = None, qu
         "technical_contribution": contribution_score,
         "novelty_framing": novelty["novelty_score"],
         "writing_quality": writing_score,
-        "journal_suitability": round(journal_match["score"] * 100),
+        "journal_suitability": round(journal_match["suitability_score"] * 100),
         "formatting_compliance": formatting_score,
     }
     overall = round(sum(scores.values()) / len(scores))
@@ -521,32 +673,55 @@ def generate_readiness_report(document_id: str, analysis: dict | None = None, qu
             ("Document Structure", scores["structure"], f"Detected {len(required_sections & section_types)} of {len(required_sections)} core sections."),
             ("Citation & Reference Consistency", citation_score, f"Found {issue_count} citation/reference issue(s)."),
             ("Research Completeness", scores["research_completeness"], "Core section coverage based on parsed headings."),
-            ("Methodology", method_score, f"Detected {sum(method_signals)} of {len(method_signals)} reproducibility evidence groups."),
-            ("Technical Contribution", contribution_score, f"Detected {sum(contribution_signals)} of {len(contribution_signals)} contribution evidence signals."),
+            ("Methodology", method_score, f"Detected {len(methodology['detected_information'])} evidence groups; {len(methodology['missing_information'])} are not explicit."),
+            ("Technical Contribution", contribution_score, f"Detected {len(contribution['strengths'])} of 10 contribution evidence signals."),
             ("Novelty Framing", novelty["novelty_score"], "Measures evidence and clarity in the manuscript, not global originality."),
-            ("Writing Quality", writing_score, "Rule-based indicators only; this is not a grammar proofread."),
+            ("Writing Quality", writing_score, f"Detected {len(writing['issues'])} rule-based writing issue(s); grammar and spelling are not configured."),
             ("Journal Suitability", scores["journal_suitability"], journal_match["explanation"]),
             ("Formatting Compliance", formatting_score, f"Passed {sum(formatting_checks)} of {len(formatting_checks)} text-based journal checks."),
         ]
     ]
-    recommendations = []
-    for issue in citation_issues["missing_references"]:
-        recommendations.append({"category": "CRITICAL", "severity": "CRITICAL", "issue": issue["message"], "explanation": issue["message"], "suggested_action": "Add or correct the matching bibliography entry.", "affected_section": "References", "priority": 1})
-    for missing in quality.get("missing_sections", []):
-        recommendations.append({"category": "HIGH", "severity": "HIGH", "issue": f"Core section not detected: {missing}.", "explanation": "The selected journal may require this content; verify the manuscript structure.", "suggested_action": f"Add or clearly label the {missing.replace('_', ' ')} section if appropriate.", "affected_section": missing, "priority": 2})
-    for missing in analyze_novelty(document_id, document)["improvement_suggestions"]:
-        recommendations.append({"category": "MEDIUM", "severity": "MEDIUM", "issue": missing, "explanation": "The manuscript currently provides limited explicit evidence for this novelty criterion.", "suggested_action": missing, "affected_section": "Introduction", "priority": 3})
-    report = {
+    recommendations = generate_improvements(document_id, document, journal_id=journal_id)["suggestions"]
+    recommendations = [
+        {
+            "category": item["category"],
+            "severity": item["severity"],
+            "issue": item.get("issue") or item["reason"],
+            "explanation": item["reason"],
+            "suggested_action": item["suggested"],
+            "affected_section": item["section"],
+            "priority": item["priority"],
+        }
+        for item in recommendations
+    ]
+    return {
         "document_id": document_id,
         "title": "Pre-Submission Readiness Assessment",
         "selected_journal": journal_id,
         "overall_readiness": overall,
         "scores": scores,
+        "score_method": "Unweighted arithmetic mean of the nine displayed dimension scores; each dimension is evidence-derived and shown below.",
         "summary": f"Rule-based readiness estimate: {overall}/100. Scores reflect parsed manuscript evidence and configured {journal.get('template_name', journal_id)} checks; they do not predict acceptance.",
         "sections": sections,
+        "quality_analysis": quality,
+        "research_completeness": completeness,
+        "journal_suitability": journal_match,
         "citation_issues": citation_issues,
         "recommendations": sorted(recommendations, key=lambda item: item["priority"]),
         "novelty_scope": "Internal manuscript analysis only; external scholarly similarity search is not configured.",
         "final_checklist": [item["suggested_action"] for item in recommendations],
     }
-    return report
+
+
+def _recommendation(category: str, section: str, issue: str, action: str, explanation: str, original: str | None = None) -> dict:
+    priority = {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}[category]
+    return {
+        "category": category,
+        "severity": category,
+        "priority": priority,
+        "affected_section": section,
+        "issue": issue,
+        "suggested_action": action,
+        "explanation": explanation,
+        "original": original or "No source sentence found; this recommendation concerns missing or inconsistent content.",
+    }

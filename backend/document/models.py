@@ -28,6 +28,7 @@ class Equation(BaseModel):
     position: int
     xml: str
     section: str | None = None
+    number: str | None = None
 
 class Citation(BaseModel):
     text: str

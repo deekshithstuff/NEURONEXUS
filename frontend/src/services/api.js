@@ -1,12 +1,11 @@
 export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
-
-export function buildDownloadUrl(documentId, format) {
-  const root = API_BASE.endsWith('/') ? API_BASE : `${API_BASE}/`
-  return new URL(`/api/documents/${documentId}/download/${format}`, root).toString()
-}
+const AUTH_TOKEN_KEY = 'neuronexus-auth-token'
 
 async function request(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options)
+  const headers = new Headers(options.headers || {})
+  const token = globalThis.sessionStorage?.getItem(AUTH_TOKEN_KEY)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const response = await fetch(`${API_BASE}${path}`, { ...options, headers })
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try {
@@ -22,7 +21,25 @@ async function request(path, options = {}) {
   return type.includes('application/json') ? response.json() : response.blob()
 }
 
+async function authenticate(path, payload) {
+  const result = await request(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  globalThis.sessionStorage.setItem(AUTH_TOKEN_KEY, result.access_token)
+  return result.user
+}
+
 export const researchApi = {
+  getAuthConfig: () => request('/api/auth/config'),
+  getCurrentUser: async () => (await request('/api/auth/me')).user,
+  registerAccount: (payload) => authenticate('/api/auth/register', payload),
+  signIn: (payload) => authenticate('/api/auth/login', payload),
+  signInWithGoogle: (credential) => authenticate('/api/auth/google', { credential }),
+  signOut: () => request('/api/auth/logout', { method: 'POST' }),
+  hasStoredAuth: () => Boolean(globalThis.sessionStorage?.getItem(AUTH_TOKEN_KEY)),
+  clearAuth: () => globalThis.sessionStorage.removeItem(AUTH_TOKEN_KEY),
   getAiStatus: () => request('/api/ai/status'),
   getDashboardSummary: () => request('/api/documents/dashboard/summary'),
   getDocuments: () => request('/api/documents'),

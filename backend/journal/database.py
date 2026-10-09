@@ -41,12 +41,16 @@ def load_journal_rules() -> list[dict]:
         resolved["abstract_requirements"].setdefault("max_words", resolved.get("abstract_formatting", {}).get("max_words"))
         resolved.setdefault("keyword_rules", {})
         resolved["keyword_rules"].setdefault("required", resolved.get("keyword_formatting", {}).get("required", False))
+        resolved.setdefault("body_font", resolved.get("font"))
+        resolved.setdefault("body_font_size", resolved.get("font_size"))
+        resolved.setdefault("in_text_citation_style", resolved.get("citation_style"))
         resolved.pop("extends", None)
         profiles.append(resolved)
     return profiles
 
 
 def seed_journals() -> None:
+    load_journal_rules.cache_clear()
     with connection() as conn:
         for payload in load_journal_rules():
             conn.execute(
