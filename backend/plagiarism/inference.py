@@ -8,6 +8,7 @@ from typing import Any
 
 from .classifier import PlagiarismClassifier
 from .feature_extractor import extract_feature_matrix
+from .semantic_matcher import semantic_status
 
 DEFAULT_ARTIFACT = (
     Path(__file__).resolve().parents[2] / "models" / "plagiarism" / "plagiarism_classifier.joblib"
@@ -45,6 +46,17 @@ def classifier_status() -> dict[str, Any]:
         model = load_classifier()
     except (OSError, ValueError, TypeError, RuntimeError) as exc:
         return {"status": "failed", "detail": f"Classifier artifact could not be loaded: {exc}"}
+    if model.use_semantic:
+        status = semantic_status()
+        if status["status"] != "available":
+            return {
+                "status": "unavailable",
+                "detail": (
+                    "The trained classifier requires its semantic embedding feature, but that "
+                    f"feature is unavailable: {status.get('detail', 'embedding model unavailable')}"
+                ),
+                "dataset_version": model.metadata.get("dataset_version"),
+            }
     return {
         "status": "available",
         "detail": "Trained logistic-regression model loaded.",
@@ -60,16 +72,26 @@ def score_retrieved_pairs(
     *,
     limit_per_passage: int = 10,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    try:
-        classifier = load_classifier()
-    except FileNotFoundError as exc:
-        return [], {"engine": "classifier", "status": "unavailable", "detail": str(exc)}
-    except (OSError, ValueError, TypeError, RuntimeError) as exc:
-        return [], {"engine": "classifier", "status": "failed", "detail": str(exc)}
-
     candidate_pairs: list[tuple[int, int]] = []
     for passage_index, indices in enumerate(candidate_indices):
         candidate_pairs.extend((passage_index, source_index) for source_index in indices[:limit_per_passage])
+
+    try:
+        classifier = load_classifier()
+    except FileNotFoundError as exc:
+        return [], {
+            "engine": "classifier",
+            "status": "unavailable",
+            "detail": str(exc),
+            "candidate_pair_count": len(candidate_pairs),
+        }
+    except (OSError, ValueError, TypeError, RuntimeError) as exc:
+        return [], {
+            "engine": "classifier",
+            "status": "failed",
+            "detail": str(exc),
+            "candidate_pair_count": len(candidate_pairs),
+        }
 
     if not candidate_pairs:
         return [], {
@@ -90,13 +112,22 @@ def score_retrieved_pairs(
         }
         for passage_index, source_index in candidate_pairs
     ]
-    features = extract_feature_matrix(
-        feature_rows,
-        tfidf_vectorizer=classifier.tfidf_vectorizer,
-        use_semantic=classifier.use_semantic,
-    )
-    probabilities = classifier.predict_positive_scores(features)
-    predictions = classifier.predict(features)
+    try:
+        features = extract_feature_matrix(
+            feature_rows,
+            tfidf_vectorizer=classifier.tfidf_vectorizer,
+            use_semantic=classifier.use_semantic,
+            semantic_model=classifier.metadata.get("semantic_model"),
+        )
+        probabilities = classifier.predict_positive_scores(features)
+        predictions = classifier.predict(features)
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        return [], {
+            "engine": "classifier",
+            "status": "failed",
+            "detail": f"Classifier inference could not be completed: {exc}",
+            "candidate_pair_count": len(candidate_pairs),
+        }
     results = []
     for (passage_index, source_index), feature, probability, prediction in zip(
         candidate_pairs, features, probabilities, predictions

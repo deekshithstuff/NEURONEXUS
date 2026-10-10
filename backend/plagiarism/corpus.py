@@ -31,9 +31,11 @@ def _load_bundled() -> list[dict[str, Any]]:
         return []
     try:
         payload = json.loads(BUNDLED_CORPUS_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [_normalize_source(entry) for entry in payload.get("sources", []) if entry.get("text")]
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not load bundled plagiarism corpus: {exc}") from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("sources"), list):
+        raise ValueError(f"Bundled plagiarism corpus has an invalid schema: {BUNDLED_CORPUS_PATH}")
+    return _normalize_json_sources(payload["sources"], BUNDLED_CORPUS_PATH)
 
 
 def _load_directory(directory: str | None) -> list[dict[str, Any]]:
@@ -41,7 +43,7 @@ def _load_directory(directory: str | None) -> list[dict[str, Any]]:
         return []
     path = Path(directory)
     if not path.is_dir():
-        return []
+        raise ValueError(f"Configured plagiarism corpus directory is not accessible: {path}")
     sources: list[dict[str, Any]] = []
     for entry in sorted(path.iterdir()):
         if not entry.is_file():
@@ -53,7 +55,9 @@ def _load_directory(directory: str | None) -> list[dict[str, Any]]:
             if suffix == ".json":
                 sources.extend(_load_json_source(entry))
             else:
-                text = entry.read_text(encoding="utf-8", errors="ignore")
+                text = entry.read_text(encoding="utf-8")
+                if not text.strip():
+                    raise ValueError(f"Configured plagiarism corpus file is empty: {entry}")
                 sources.append(_normalize_source({
                     "id": f"file-{entry.stem}",
                     "title": entry.stem.replace("_", " ").replace("-", " ").title(),
@@ -61,21 +65,36 @@ def _load_directory(directory: str | None) -> list[dict[str, Any]]:
                     "url": None,
                     "text": text,
                 }))
-        except OSError:
-            continue
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"Could not read configured plagiarism corpus file {entry}: {exc}") from exc
     return sources
 
 
 def _load_json_source(path: Path) -> list[dict[str, Any]]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not load configured plagiarism corpus file {path}: {exc}") from exc
     if isinstance(payload, dict) and isinstance(payload.get("sources"), list):
-        return [_normalize_source(entry) for entry in payload["sources"] if entry.get("text")]
+        return _normalize_json_sources(payload["sources"], path)
     if isinstance(payload, list):
-        return [_normalize_source(entry) for entry in payload if entry.get("text")]
-    return []
+        return _normalize_json_sources(payload, path)
+    raise ValueError(f"Configured plagiarism corpus file has an invalid schema: {path}")
+
+
+def _normalize_json_sources(entries: list[Any], path: Path) -> list[dict[str, Any]]:
+    sources = []
+    for index, entry in enumerate(entries, start=1):
+        if (
+            not isinstance(entry, dict)
+            or not str(entry.get("id") or "").strip()
+            or not str(entry.get("text") or "").strip()
+        ):
+            raise ValueError(
+                f"Corpus source {index} in {path} must have a non-empty id and text."
+            )
+        sources.append(_normalize_source(entry))
+    return sources
 
 
 def _normalize_source(entry: dict[str, Any]) -> dict[str, Any]:
@@ -94,24 +113,44 @@ def _deduplicate(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for source in sources:
-        if source["id"] in seen or not source["text"].strip():
-            continue
+        if source["id"] in seen:
+            raise ValueError(f"Duplicate plagiarism corpus source ID: {source['id']}")
+        if not source["text"].strip():
+            raise ValueError(f"Plagiarism corpus source has no text: {source['id']}")
         seen.add(source["id"])
         unique.append(source)
     return unique
 
 
 def corpus_info(sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    sources = sources if sources is not None else load_corpus()
+    corpus_error = None
+    if sources is None:
+        try:
+            sources = load_corpus()
+        except ValueError as exc:
+            sources = []
+            corpus_error = str(exc)
+    sources = sources or []
     custom_dir = os.getenv("PAPERPILOT_PLAGIARISM_CORPUS_DIR")
     demo_count = sum(source.get("source_type") == "bundled_synthetic" for source in sources)
     custom_count = len(sources) - demo_count
     return {
+        "status": "failed" if corpus_error else ("available" if sources else "unavailable"),
+        "error": corpus_error,
         "name": "Identified PaperPilot comparison corpus",
         "source_count": len(sources),
         "synthetic_demo_source_count": demo_count,
         "custom_source_count": custom_count,
         "custom_corpus_dir_configured": bool(custom_dir),
+        "custom_corpus_status": (
+            "failed"
+            if corpus_error and custom_dir
+            else (
+                "not_configured"
+                if not custom_dir
+                else ("available" if custom_count else "empty")
+            )
+        ),
         "description": (
             "The checker compares only with identified bundled synthetic demonstration texts and "
             "operator-provided local sources. It does not search all published research or the internet. "

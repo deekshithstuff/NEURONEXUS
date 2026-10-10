@@ -26,9 +26,11 @@ class FeatureExtractor:
         *,
         tfidf_vectorizer: Any | TfidfSimilarityIndex | None = None,
         use_semantic: bool = False,
+        semantic_model: str | None = None,
     ) -> None:
         self.tfidf_vectorizer = tfidf_vectorizer
         self.use_semantic = use_semantic
+        self.semantic_model = semantic_model
         self.exact_matcher = ExactMatcher(min_tokens=3, threshold=0.6)
 
     def extract(
@@ -46,8 +48,20 @@ class FeatureExtractor:
         )
         exact_phrase_match = float(bool(self.exact_matcher.match(source_text, suspicious_text)))
         semantic_score = 0.0
-        if self.use_semantic and semantic_status()["status"] == "available":
-            semantic_score = semantic_similarity(source_text, suspicious_text) or 0.0
+        if self.use_semantic:
+            status = semantic_status()
+            if status["status"] != "available":
+                raise RuntimeError(
+                    f"Semantic feature is unavailable: {status.get('detail', 'embedding model unavailable')}"
+                )
+            semantic_result = semantic_similarity(
+                source_text,
+                suspicious_text,
+                model_name=self.semantic_model,
+            )
+            if semantic_result is None:
+                raise RuntimeError("Semantic feature computation returned no embedding score.")
+            semantic_score = semantic_result
         source_tokens = tokenize(source_text)
         suspicious_tokens = tokenize(suspicious_text)
         passage_length_ratio = (
@@ -80,10 +94,12 @@ def extract_features(
     citation_present: bool | None = None,
     tfidf_vectorizer: Any | TfidfSimilarityIndex | None = None,
     use_semantic: bool = False,
+    semantic_model: str | None = None,
 ) -> dict[str, float | int]:
     return FeatureExtractor(
         tfidf_vectorizer=tfidf_vectorizer,
         use_semantic=use_semantic,
+        semantic_model=semantic_model,
     ).extract(
         source_text,
         suspicious_text,
@@ -97,8 +113,13 @@ def extract_feature_matrix(
     *,
     tfidf_vectorizer: Any | TfidfSimilarityIndex | None = None,
     use_semantic: bool = False,
+    semantic_model: str | None = None,
 ) -> list[dict[str, float | int]]:
-    extractor = FeatureExtractor(tfidf_vectorizer=tfidf_vectorizer, use_semantic=use_semantic)
+    extractor = FeatureExtractor(
+        tfidf_vectorizer=tfidf_vectorizer,
+        use_semantic=use_semantic,
+        semantic_model=semantic_model,
+    )
     return [
         extractor.extract(
             str(row.get("source_text") or ""),

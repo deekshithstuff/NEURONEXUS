@@ -8,6 +8,7 @@ from backend.plagiarism.classifier import PlagiarismClassifier
 from backend.plagiarism.engine import analyze
 from backend.plagiarism.exact_matcher import detect_exact_matches
 from backend.plagiarism.feature_extractor import FEATURE_NAMES, extract_features
+from backend.plagiarism.corpus import corpus_info, load_corpus
 from backend.plagiarism.lexical_matcher import (
     TfidfSimilarityIndex,
     char_ngrams,
@@ -116,6 +117,75 @@ def test_semantic_missing_dependency_is_explicit_not_hash_fallback(monkeypatch):
     assert semantic_similarity("source text", "similar target text") is None
 
 
+def test_semantic_feature_uses_the_configured_model_identity(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "backend.plagiarism.feature_extractor.semantic_status",
+        lambda: {"engine": "semantic", "status": "available"},
+    )
+
+    def _similarity(_source, _target, *, model_name=None):
+        calls.append(model_name)
+        return 0.73
+
+    monkeypatch.setattr("backend.plagiarism.feature_extractor.semantic_similarity", _similarity)
+    features = extract_features(
+        "source text",
+        "paraphrased text",
+        use_semantic=True,
+        semantic_model="verified-model-revision",
+    )
+    assert features["semantic_cosine"] == pytest.approx(0.73)
+    assert calls == ["verified-model-revision"]
+
+
+def test_missing_semantic_feature_fails_classifier_scoring_explicitly(monkeypatch):
+    monkeypatch.setattr(
+        "backend.plagiarism.feature_extractor.semantic_status",
+        lambda: {"engine": "semantic", "status": "unavailable", "detail": "model unavailable"},
+    )
+    with pytest.raises(RuntimeError, match="Semantic feature is unavailable"):
+        extract_features("source text", "target text", use_semantic=True)
+
+
+def test_configured_local_corpus_loads_source_metadata(tmp_path, monkeypatch):
+    source_file = tmp_path / "licensed-review.txt"
+    source_file.write_text(
+        "A licensed source passage with enough words to be indexed and compared.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PAPERPILOT_PLAGIARISM_CORPUS_DIR", str(tmp_path))
+
+    source = next(item for item in load_corpus() if item["id"] == "file-licensed-review")
+    status = corpus_info()
+    assert source["title"] == "Licensed Review"
+    assert source["url"] is None
+    assert source["source_type"] == "custom_corpus_file"
+    assert status["status"] == "available"
+    assert status["custom_source_count"] == 1
+
+
+def test_invalid_configured_corpus_is_not_silently_ignored(tmp_path, monkeypatch):
+    monkeypatch.setenv("PAPERPILOT_PLAGIARISM_CORPUS_DIR", str(tmp_path / "missing"))
+    status = corpus_info()
+    assert status["status"] == "failed"
+    assert "not accessible" in status["error"]
+    with pytest.raises(ValueError, match="not accessible"):
+        load_corpus()
+
+
+def test_empty_corpus_report_discloses_that_no_source_search_occurred():
+    report = analyze(
+        {"document_id": "DOC-EMPTY-CORPUS", "paragraphs": [SOURCE]},
+        [],
+        ["lexical"],
+    )
+    lexical_status = next(engine for engine in report["engines"] if engine["engine"] == "lexical")
+    assert lexical_status["status"] == "unavailable"
+    assert "no source search was performed" in lexical_status["detail"]
+    assert report["scope"]["corpus"]["status"] == "unavailable"
+
+
 def test_classifier_fit_save_load_and_feature_schema_consistency(tmp_path):
     rows = _training_rows()
     vectorizer = _tfidf_vectorizer(ngram_range=(1, 2)).fit(
@@ -202,6 +272,47 @@ def test_dataset_rejects_bad_labels_and_conflicting_duplicates(tmp_path):
         load_dataset(_write_dataset(tmp_path / "duplicate.json", duplicate))
 
 
+def test_dataset_rejects_incomplete_rows_instead_of_silently_dropping_them(tmp_path):
+    row = {
+        "source_document_id": "source-1",
+        "suspicious_document_id": "target-1",
+        "suspicious_text": "A passage with content.",
+        "label": 0,
+    }
+    with pytest.raises(ValueError, match="missing required fields: source_text"):
+        load_dataset(_write_dataset(tmp_path / "missing-field.json", [row]))
+
+    row["source_text"] = " "
+    with pytest.raises(ValueError, match="non-empty document IDs and passage texts"):
+        load_dataset(_write_dataset(tmp_path / "empty-text.json", [row]))
+
+
+def test_split_keeps_lightly_edited_derivatives_in_one_group(tmp_path):
+    rows = _training_rows()
+    base_text = (
+        "The research team examined distributed training methods across regional hospitals "
+        "while keeping sensitive patient records securely stored within each institution for privacy."
+    )
+    edited_text = base_text.replace("examined", "evaluated")
+    rows[0] = {
+        **rows[0],
+        "source_text": base_text,
+        "suspicious_text": base_text,
+    }
+    rows[2] = {
+        **rows[2],
+        "source_text": edited_text,
+        "suspicious_text": edited_text,
+    }
+    prepared = prepare_dataset(_write_dataset(tmp_path / "derivatives.json", rows), random_state=21)
+    split_by_document = {
+        row["source_document_id"]: name
+        for name in ("train", "validation", "test")
+        for row in prepared[name]
+    }
+    assert split_by_document["src-0"] == split_by_document["src-2"]
+
+
 def test_training_and_evaluation_use_independent_test_split(tmp_path):
     _tfidf_vectorizer()
     dataset_path = _write_dataset(tmp_path / "pairs.json", _training_rows())
@@ -282,5 +393,46 @@ def test_missing_model_is_explicit_and_does_not_change_lexical_matches(tmp_path,
         ["lexical"],
     )
     assert report["classifier"]["status"]["status"] == "unavailable"
+    assert report["classifier"]["candidate_scores"] == []
+    assert report["matches"][0]["source"]["id"] == "identified-source"
+
+
+def test_classifier_semantic_failure_does_not_discard_lexical_results(monkeypatch):
+    class _SemanticClassifier:
+        tfidf_vectorizer = None
+        use_semantic = True
+        threshold = 0.5
+        metadata = {"semantic_model": "missing-model"}
+
+    monkeypatch.setattr(
+        "backend.plagiarism.inference.load_classifier",
+        lambda: _SemanticClassifier(),
+    )
+    monkeypatch.setattr(
+        "backend.plagiarism.feature_extractor.semantic_status",
+        lambda: {"engine": "semantic", "status": "unavailable", "detail": "model unavailable"},
+    )
+    report = analyze(
+        {
+            "document_id": "DOC-SEMANTIC-FAILURE",
+            "paragraphs": [SOURCE],
+            "citations": [],
+            "references": [],
+            "sections": [],
+        },
+        [
+            {
+                "id": "identified-source",
+                "title": "Identified Source",
+                "url": None,
+                "source_type": "test",
+                "authors": [],
+                "year": None,
+                "text": SOURCE,
+            }
+        ],
+        ["lexical"],
+    )
+    assert report["classifier"]["status"]["status"] == "failed"
     assert report["classifier"]["candidate_scores"] == []
     assert report["matches"][0]["source"]["id"] == "identified-source"

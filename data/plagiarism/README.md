@@ -17,8 +17,11 @@ CSV, JSON array / `{ "data": [...] }`, and JSONL are accepted. Each record requi
 Optional fields include `source_start`, `source_end`, `suspicious_start`, `suspicious_end`,
 `citation_context`, `source_group_id`, `document_group_id`, and `derivative_group_id`.
 The training split builder links pairs sharing document IDs, explicitly supplied group IDs, or
-identical normalized document text; connected groups never cross splits. Ambiguous or conflicting
-labels must be resolved before training.
+identical normalized document text. It also conservatively groups lightly edited derivatives when
+they share enough five-word shingles and have high token-sequence similarity. Connected groups never
+cross splits. Automatic matching cannot identify every paraphrase, reordering, or derivative family;
+provide stable derivative/group IDs whenever that relationship is known. Malformed rows are rejected
+instead of silently dropped. Ambiguous or conflicting labels must be resolved before training.
 
 At least 12 valid labeled pairs and six independent document groups are required. Each train,
 validation, and test split must contain both labels. The pipeline refuses to train if this cannot

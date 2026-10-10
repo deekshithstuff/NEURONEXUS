@@ -49,11 +49,19 @@ plagiarism; the report states this explicitly.
 
 - **Internal corpus (default):** `backend/plagiarism/corpus/sources.json` ships synthetic exemplar
   texts. Point `PAPERPILOT_PLAGIARISM_CORPUS_DIR` at a directory of your own `.txt`/`.md`/`.json`
-  sources to compare against a licensed collection. Manuscripts are never added to the corpus, so
-  content is not shared between accounts.
-- **Lexical and exact evidence:** case/Unicode-normalized matching, word and character n-gram overlap,
-  and corpus-fitted TF-IDF are reported as distinct evidence. The TF-IDF vectorizer is fitted during
-  supervised model training and reused from its trusted artifact at inference.
+  sources to compare against a licensed collection. JSON sources require stable `id` and `text`
+  fields; title, authors, year, URL, and provenance can be supplied. An invalid configured corpus is
+  reported as a corpus error and the scan fails rather than silently searching fewer sources.
+  Manuscripts are never added to the corpus, so content is not shared between accounts.
+- **Lexical matching:** the internal scan uses normalized token-sequence matching for exact and
+  near-exact passages, with source and manuscript passage offsets and citation/quotation context.
+  Word/character n-gram and genuine fitted TF-IDF cosine features are used by the optional classifier;
+  they are not represented as independent lexical report scores when no trained artifact is installed.
+  The saved TF-IDF vectorizer is fitted on training text only and reused at inference.
+  Reports retain the UI-compatible `matches` list and also expose separate `match_groups` for
+  lexical, semantic, and external results plus a `retrieval` summary. The reported overall
+  similarity is local exact/near-exact lexical overlap only; classifier scores and external-provider
+  scores are not folded into it.
 - **Semantic engine (optional):** install `python -m pip install "sentence-transformers>=3,<4"` and
   set `PAPERPILOT_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2` if desired. This is a
   general-purpose pretrained embedding model, not a plagiarism-trained model. Semantic matches are
@@ -73,9 +81,13 @@ plagiarism; the report states this explicitly.
 Training does not run during document upload. Use labeled CSV, JSON, or JSONL passage pairs under
 `data/plagiarism/` (see [data/plagiarism/README.md](data/plagiarism/README.md)). Labels must be
 documented binary values: `1` for a suspicious/copied relationship, `0` for a documented non-match.
-The split logic groups shared source/suspicious document IDs, explicitly related groups, and
-identical normalized texts before splitting. It requires at least 12 pairs, six independent groups,
-and both classes in train, validation, and test; there is no same-data evaluation fallback.
+The split logic groups shared source/suspicious document IDs, explicitly related groups, identical
+normalized texts, and conservatively detected lightly edited derivatives (shared five-word shingles
+and high token-sequence similarity) before splitting. Provide `derivative_group_id` or another group
+field for known relationships; automatic text similarity cannot identify every paraphrase or
+reordering. It requires at least 12 pairs, six independent groups, and both classes in train,
+validation, and test; there is no same-data evaluation fallback. Malformed records are rejected with
+their row number rather than silently discarded.
 
 ```powershell
 cd E:\Project\NEURONEXUS

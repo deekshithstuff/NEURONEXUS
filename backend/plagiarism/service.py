@@ -181,8 +181,12 @@ def _run_external_scan(
     engine_status: list[dict[str, Any]] = [
         {
             "engine": "lexical",
-            "status": "completed",
-            "detail": "Local exact and near-exact matching against the identified corpus.",
+            "status": "completed" if sources else "unavailable",
+            "detail": (
+                "Local exact and near-exact matching against the identified corpus."
+                if sources
+                else "No local comparison sources were loaded; no local source search was performed."
+            ),
         }
     ]
     engine_status.append(classifier_engine_status)

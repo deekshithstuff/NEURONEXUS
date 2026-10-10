@@ -103,11 +103,13 @@ def train_model(
         train_rows,
         tfidf_vectorizer=vectorizer,
         use_semantic=use_semantic,
+        semantic_model=DEFAULT_MODEL if use_semantic else None,
     )
     validation_features = extract_feature_matrix(
         validation_rows,
         tfidf_vectorizer=vectorizer,
         use_semantic=use_semantic,
+        semantic_model=DEFAULT_MODEL if use_semantic else None,
     )
     labels_train = [int(row["label"]) for row in train_rows]
     labels_validation = [int(row["label"]) for row in validation_rows]
@@ -162,6 +164,7 @@ def train_model(
         test_rows,
         tfidf_vectorizer=vectorizer,
         use_semantic=use_semantic,
+        semantic_model=DEFAULT_MODEL if use_semantic else None,
     )
     validation_baseline_scores = [_baseline_score(row) for row in validation_features]
     lexical_threshold = _tune_threshold(labels_validation, validation_baseline_scores)

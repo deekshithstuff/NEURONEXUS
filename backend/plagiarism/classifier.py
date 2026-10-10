@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,10 @@ class PlagiarismClassifier:
             raise ValueError("Supervised training requires examples from both binary classes 0 and 1.")
         if tfidf_vectorizer is None or not hasattr(tfidf_vectorizer, "vocabulary_"):
             raise ValueError("Training requires a fitted TF-IDF vectorizer.")
+        if use_semantic and not self.metadata.get("semantic_model"):
+            raise ValueError(
+                "Semantic training requires the embedding model identity in classifier metadata."
+            )
         try:
             from sklearn.linear_model import LogisticRegression
         except ImportError as exc:
@@ -123,24 +129,66 @@ class PlagiarismClassifier:
             raise RuntimeError(
                 "scikit-learn is required to load the trained classifier; install backend\\requirements.txt."
             ) from exc
-        payload = joblib.load(target)
+        try:
+            payload = joblib.load(target)
+        except (OSError, EOFError, pickle.UnpicklingError, ImportError, AttributeError, ValueError, TypeError) as exc:
+            raise ValueError(f"Could not deserialize classifier artifact {target}: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"Classifier artifact must contain a metadata dictionary: {target}")
+        required_fields = {
+            "artifact_version",
+            "classifier",
+            "tfidf_vectorizer",
+            "feature_names",
+            "threshold",
+            "random_state",
+            "use_semantic",
+            "metadata",
+        }
+        missing_fields = required_fields - set(payload)
+        if missing_fields:
+            raise ValueError(
+                f"Classifier artifact is missing fields: {', '.join(sorted(missing_fields))}."
+            )
         if payload.get("artifact_version") != ARTIFACT_VERSION:
             raise ValueError(f"Unsupported classifier artifact version in {target}.")
         model = payload.get("classifier")
         vectorizer = payload.get("tfidf_vectorizer")
         if not isinstance(model, LogisticRegression) or not hasattr(vectorizer, "vocabulary_"):
             raise ValueError(f"Invalid or incomplete trained classifier artifact: {target}")
+        try:
+            threshold = float(payload["threshold"])
+            random_state = int(payload["random_state"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Classifier artifact has invalid threshold or random state: {target}") from exc
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 1.0:
+            raise ValueError(f"Classifier artifact threshold must be between 0 and 1: {target}")
+        if not isinstance(payload["use_semantic"], bool):
+            raise ValueError(f"Classifier artifact semantic setting is invalid: {target}")
+        if not isinstance(payload["metadata"], dict):
+            raise ValueError(f"Classifier artifact metadata must be a dictionary: {target}")
         artifact = cls(
-            threshold=float(payload["threshold"]),
-            random_state=int(payload["random_state"]),
+            threshold=threshold,
+            random_state=random_state,
             metadata=dict(payload.get("metadata") or {}),
         )
         artifact.model = model
         artifact.tfidf_vectorizer = vectorizer
-        artifact.feature_names = list(payload["feature_names"])
+        feature_names = payload.get("feature_names")
+        if not isinstance(feature_names, list) or not all(
+            isinstance(name, str) for name in feature_names
+        ):
+            raise ValueError("The artifact has invalid feature names.")
+        artifact.feature_names = feature_names
         artifact.use_semantic = bool(payload.get("use_semantic", False))
         if artifact.feature_names != list(FEATURE_NAMES):
             raise ValueError("The artifact feature schema does not match the current inference schema.")
+        if getattr(model, "n_features_in_", None) != len(FEATURE_NAMES):
+            raise ValueError("The classifier artifact model width does not match its feature schema.")
+        if list(getattr(model, "classes_", [])) != [0, 1]:
+            raise ValueError("The classifier artifact does not contain both binary label classes.")
+        if artifact.use_semantic and not artifact.metadata.get("semantic_model"):
+            raise ValueError("The semantic classifier artifact does not identify its embedding model.")
         return artifact
 
 
@@ -153,16 +201,22 @@ def train_classifier(
     use_semantic: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> PlagiarismClassifier:
+    classifier_metadata = dict(metadata or {})
+    if use_semantic and not classifier_metadata.get("semantic_model"):
+        from .semantic_matcher import DEFAULT_MODEL
+
+        classifier_metadata["semantic_model"] = DEFAULT_MODEL
     features = extract_feature_matrix(
         training_pairs,
         tfidf_vectorizer=tfidf_vectorizer,
         use_semantic=use_semantic,
+        semantic_model=classifier_metadata.get("semantic_model"),
     )
     labels = [int(pair["label"]) for pair in training_pairs]
     return PlagiarismClassifier(
         threshold=threshold,
         random_state=random_state,
-        metadata=metadata,
+        metadata=classifier_metadata,
     ).fit(
         features,
         labels,
@@ -187,6 +241,7 @@ def evaluate_classifier(
         rows,
         tfidf_vectorizer=classifier.tfidf_vectorizer,
         use_semantic=classifier.use_semantic,
+        semantic_model=classifier.metadata.get("semantic_model"),
     )
     labels = [int(row["label"]) for row in rows]
     predictions = classifier.predict(features)

@@ -6,8 +6,12 @@ import json
 import random
 import re
 import unicodedata
+from collections import Counter, defaultdict
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
+
+from backend.plagiarism.preprocessing import ngrams, tokenize
 
 REQUIRED_FIELDS = {
     "source_document_id",
@@ -62,11 +66,14 @@ def load_dataset(path: str | Path) -> list[dict[str, Any]]:
     rows = _load_rows(source)
     validated: list[dict[str, Any]] = []
     seen: dict[tuple[str, str, str, str], int] = {}
-    skipped_invalid = 0
     for index, row in enumerate(rows, start=1):
-        if not isinstance(row, dict) or REQUIRED_FIELDS - set(row):
-            skipped_invalid += 1
-            continue
+        if not isinstance(row, dict):
+            raise ValueError(f"Dataset row {index} must be an object.")
+        missing_fields = REQUIRED_FIELDS - set(row)
+        if missing_fields:
+            raise ValueError(
+                f"Dataset row {index} is missing required fields: {', '.join(sorted(missing_fields))}."
+            )
         try:
             label = _coerce_label(row["label"])
         except ValueError as exc:
@@ -76,8 +83,9 @@ def load_dataset(path: str | Path) -> list[dict[str, Any]]:
         source_id = str(row.get("source_document_id") or "").strip()
         suspicious_id = str(row.get("suspicious_document_id") or "").strip()
         if not all((source_text, suspicious_text, source_id, suspicious_id)):
-            skipped_invalid += 1
-            continue
+            raise ValueError(
+                f"Dataset row {index} must have non-empty document IDs and passage texts."
+            )
         key = (
             min(source_id, suspicious_id),
             max(source_id, suspicious_id),
@@ -121,6 +129,9 @@ def _normalized_fingerprint(text: str) -> str:
 
 def _group_ids(rows: list[dict[str, Any]]) -> list[str]:
     parent: dict[str, str] = {}
+    text_nodes: dict[str, str] = {}
+    text_shingles: dict[str, set[str]] = {}
+    text_tokens: dict[str, list[str]] = {}
 
     def find(node: str) -> str:
         parent.setdefault(node, node)
@@ -134,6 +145,16 @@ def _group_ids(rows: list[dict[str, Any]]) -> list[str]:
         if left_root != right_root:
             parent[right_root] = left_root
 
+    def add_text(document_node: str, text: str) -> None:
+        fingerprint = _normalized_fingerprint(text)
+        text_node = text_nodes.setdefault(fingerprint, f"text:{fingerprint}")
+        union(document_node, text_node)
+        tokens = tokenize(text)
+        if fingerprint not in text_tokens:
+            text_tokens[fingerprint] = tokens
+            if len(tokens) >= 10:
+                text_shingles[fingerprint] = set(ngrams(tokens, 5))
+
     document_nodes: list[tuple[str, str]] = []
     for row in rows:
         source_id = f"doc:{row['source_document_id']}"
@@ -145,8 +166,37 @@ def _group_ids(rows: list[dict[str, Any]]) -> list[str]:
             if group_value:
                 union(source_id, f"group:{field}:{group_value}")
                 union(suspicious_id, f"group:{field}:{group_value}")
-        union(source_id, f"text:{_normalized_fingerprint(row['source_text'])}")
-        union(suspicious_id, f"text:{_normalized_fingerprint(row['suspicious_text'])}")
+        add_text(source_id, row["source_text"])
+        add_text(suspicious_id, row["suspicious_text"])
+
+    shingle_documents: dict[str, list[str]] = defaultdict(list)
+    for fingerprint in sorted(text_shingles):
+        candidates: Counter[str] = Counter()
+        for shingle in text_shingles[fingerprint]:
+            prior_texts = shingle_documents[shingle]
+            if len(prior_texts) <= 100:
+                candidates.update(prior_texts)
+        left_shingles = text_shingles[fingerprint]
+        for candidate, shared_shingles in candidates.most_common(500):
+            right_shingles = text_shingles[candidate]
+            if (
+                shared_shingles < 4
+                or shared_shingles / min(len(left_shingles), len(right_shingles)) < 0.65
+            ):
+                continue
+            if (
+                SequenceMatcher(
+                    None,
+                    text_tokens[fingerprint],
+                    text_tokens[candidate],
+                    autojunk=False,
+                ).ratio()
+                >= 0.85
+            ):
+                union(text_nodes[fingerprint], text_nodes[candidate])
+        for shingle in left_shingles:
+            shingle_documents[shingle].append(fingerprint)
+
     return [find(source_id) for source_id, _ in document_nodes]
 
 

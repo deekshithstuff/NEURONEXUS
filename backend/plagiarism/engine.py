@@ -283,17 +283,35 @@ def build_report(
 ) -> dict[str, Any]:
     numbered = _number_matches(matches)
     source_summary = _source_summary(numbered)
-    matched_words = sum(match["matched_words"] for match in numbered)
-    suspected = [match for match in numbered if match["classification"] == "suspected_unattributed"]
-    quotations = [match for match in numbered if match["classification"] in {"quotation", "attributed_quotation"}]
-    cited = [match for match in numbered if match["classification"] == "cited_match"]
+    lexical_matches = [match for match in numbered if match["method"] in {"exact", "near_exact"}]
+    semantic_results = [match for match in numbered if match["method"] == "semantic"]
+    external_results = [match for match in numbered if match["method"] == "external"]
+    source_groups = {
+        "lexical": _source_summary(lexical_matches),
+        "semantic": _source_summary(semantic_results),
+        "external": _source_summary(external_results),
+    }
+    matched_words = sum(match["matched_words"] for match in lexical_matches)
+    suspected = [match for match in lexical_matches if match["classification"] == "suspected_unattributed"]
+    quotations = [
+        match for match in lexical_matches
+        if match["classification"] in {"quotation", "attributed_quotation"}
+    ]
+    cited = [match for match in lexical_matches if match["classification"] == "cited_match"]
     suspected_words = sum(match["matched_words"] for match in suspected)
     summary = {
         "overall_similarity": round(matched_words / total_words, 4) if total_words else 0.0,
+        "overall_similarity_scope": "Exact/near-exact lexical overlap against the local comparison corpus only.",
         "matched_words": matched_words,
         "total_words": total_words,
         "match_count": len(numbered),
         "source_count": len(source_summary),
+        "lexical_match_count": len(lexical_matches),
+        "semantic_match_count": len(semantic_results),
+        "external_match_count": len(external_results),
+        "lexical_source_count": len(source_groups["lexical"]),
+        "semantic_source_count": len(source_groups["semantic"]),
+        "external_source_count": len(source_groups["external"]),
         "suspected_unattributed_words": suspected_words,
         "suspected_unattributed_ratio": round(suspected_words / total_words, 4) if total_words else 0.0,
         "attributed_match_count": len(cited),
@@ -307,6 +325,23 @@ def build_report(
         "summary": summary,
         "sources": source_summary,
         "matches": numbered,
+        "source_groups": source_groups,
+        "match_groups": {
+            "lexical": lexical_matches,
+            "semantic": semantic_results,
+            "external": external_results,
+        },
+        "retrieval": {
+            "status": "completed" if sources else "unavailable",
+            "engine": "local_corpus_lexical_candidates",
+            "corpus_source_count": len(sources),
+            "candidate_pair_count": (classifier_status or {}).get("candidate_pair_count", 0),
+            "detail": (
+                "Candidates were retrieved only from the configured local comparison corpus."
+                if sources
+                else "No comparison sources were loaded; no source search was performed."
+            ),
+        },
         "classifier": {
             "status": classifier_status or {"engine": "classifier", "status": "unavailable"},
             "candidate_scores": classifier_results or [],
@@ -332,6 +367,7 @@ def build_report(
             "limitations": [
                 "A match indicates textual overlap with one identified corpus source only.",
                 "Semantic similarity signals topical or paraphrase similarity and is not evidence of plagiarism on its own.",
+                "External-provider results are reported separately and depend on that provider's coverage.",
                 "This check does not prove plagiarism; verify every match against the original source.",
                 "Standard terminology and journal template text are excluded or flagged transparently.",
             ],
@@ -460,8 +496,12 @@ def analyze(
     engine_status: list[dict[str, Any]] = [
         {
             "engine": "lexical",
-            "status": "completed",
-            "detail": "Exact and near-exact sentence matching against the identified corpus.",
+            "status": "completed" if sources else "unavailable",
+            "detail": (
+                "Exact and near-exact sentence matching against the identified corpus."
+                if sources
+                else "No comparison sources were loaded; no source search was performed."
+            ),
         }
     ]
     engine_status.append(classifier_engine_status)
