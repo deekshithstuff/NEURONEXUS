@@ -17,6 +17,7 @@ import {
   MoreHorizontal,
   PanelLeft,
   Plus,
+  ScanSearch,
   Settings2,
   ShieldCheck,
   Sparkles,
@@ -26,6 +27,7 @@ import {
   Zap,
 } from 'lucide-react'
 import AuthScreen from './AuthScreen'
+import PlagiarismPage from './PlagiarismPage'
 import { researchApi } from './services/api'
 
 const navigation = [
@@ -33,6 +35,7 @@ const navigation = [
   { label: 'Upload', icon: UploadCloud, id: 'upload' },
   { label: 'Document Analysis', icon: FileText, id: 'analysis' },
   { label: 'Citations', icon: BookOpen, id: 'citations' },
+  { label: 'Plagiarism', icon: ScanSearch, id: 'plagiarism' },
   { label: 'Journal', icon: Globe2, id: 'journal' },
   { label: 'Quality', icon: BarChart3, id: 'quality' },
   { label: 'Novelty', icon: Sparkles, id: 'novelty' },
@@ -116,6 +119,7 @@ function ResearchWorkspace({ user, onSignOut }) {
   const [writingAnalysis, setWritingAnalysis] = useState({})
   const [journalMatch, setJournalMatch] = useState({})
   const [improvements, setImprovements] = useState({ suggestions: [] })
+  const [improvementDecisions, setImprovementDecisions] = useState({})
   const [report, setReport] = useState({
     title: 'Pre-Submission Readiness Assessment',
     summary: 'Upload or open an analyzed manuscript to calculate readiness.',
@@ -183,8 +187,24 @@ function ResearchWorkspace({ user, onSignOut }) {
     setWritingAnalysis(writing)
     setJournalMatch(journal)
     setImprovements(improvement)
+    setImprovementDecisions({})
     setReport(reportDetails)
   }
+
+  const setImprovementDecision = (suggestionId, decision) => {
+    setImprovementDecisions((previous) => ({ ...previous, [suggestionId]: decision }))
+  }
+
+  const acceptedImprovements = (improvements.suggestions || [])
+    .filter((suggestion) => improvementDecisions[suggestion.id] === 'accepted')
+    .map((suggestion) => ({
+      id: suggestion.id,
+      section: suggestion.section,
+      issue: suggestion.issue,
+      original: suggestion.original,
+      suggested: suggestion.suggested,
+      accepted: true,
+    }))
 
   const openManuscript = async (documentId) => {
     setManuscriptError('')
@@ -413,6 +433,7 @@ function ResearchWorkspace({ user, onSignOut }) {
 
           {active === 'analysis' && <AnalysisPage document={document} setActive={setActive} citationReport={citationReport} />}
           {active === 'citations' && <CitationPage citationReport={citationReport} document={document} setActive={setActive} />}
+          {active === 'plagiarism' && <PlagiarismPage document={document} setActive={setActive} />}
           {active === 'journal' && (
             <JournalPage
               document={document}
@@ -429,7 +450,14 @@ function ResearchWorkspace({ user, onSignOut }) {
           {active === 'methodology' && <MethodologyPage methodologyAnalysis={methodologyAnalysis} setActive={setActive} />}
           {active === 'contribution' && <ContributionPage contributionAnalysis={contributionAnalysis} setActive={setActive} />}
           {active === 'writing' && <WritingPage writingAnalysis={writingAnalysis} setActive={setActive} />}
-          {active === 'improvements' && <ImprovementsPage improvements={improvements} setActive={setActive} />}
+          {active === 'improvements' && (
+            <ImprovementsPage
+              improvements={improvements}
+              decisions={improvementDecisions}
+              onDecision={setImprovementDecision}
+              setActive={setActive}
+            />
+          )}
           {active === 'report' && <ReportPage report={report} setActive={setActive} />}
           {active === 'formatting' && <FormattingPage document={document} selectedJournalId={selectedJournalId} selectedJournal={selectedJournal} setActive={setActive} />}
           {active === 'export' && (
@@ -437,6 +465,7 @@ function ResearchWorkspace({ user, onSignOut }) {
               document={document}
               selectedJournal={selectedJournal}
               selectedJournalId={selectedJournalId}
+              approvedChanges={acceptedImprovements}
               setActive={setActive}
             />
           )}
@@ -909,7 +938,7 @@ function QualityPage({ qualityAnalysis, completenessAnalysis, setActive }) {
         <section className="panel">
           <div className="panel-heading"><div><p className="kicker">ACTIONS</p><h2>Suggestions</h2></div></div>
           <ul className="mini-list">
-            {(qualityAnalysis.suggestions || []).map((suggestion) => <li key={suggestion}>{suggestion}</li>)}
+            {(qualityAnalysis.suggestions || []).map((suggestion, index) => <li key={`${index}-${suggestion}`}>{suggestion}</li>)}
           </ul>
         </section>
         {completenessAnalysis?.document_id && (
@@ -1008,7 +1037,7 @@ function NoveltyPage({ noveltyAnalysis, setActive }) {
           <div className="panel-heading"><div><p className="kicker">RECOMMENDATION</p><h2>What to improve</h2></div></div>
           <p className="supporting-text">{noveltyAnalysis.explanation}</p>
           <ul className="mini-list">
-            {(noveltyAnalysis.improvement_suggestions || []).map((item) => <li key={item}>{item}</li>)}
+            {(noveltyAnalysis.improvement_suggestions || []).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
           </ul>
         </section>
       </div>
@@ -1032,14 +1061,14 @@ function MethodologyPage({ methodologyAnalysis, setActive }) {
         <section className="panel">
           <div className="panel-heading"><div><p className="kicker">DETECTED</p><h2>Method details present</h2></div></div>
           <ul className="mini-list">
-            {(methodologyAnalysis.detected_information || []).map((item) => <li key={item}>{item}</li>)}
+            {(methodologyAnalysis.detected_information || []).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
           </ul>
         </section>
         <section className="panel">
           <div className="panel-heading"><div><p className="kicker">GAPS</p><h2>Missing / weak</h2></div></div>
           <p className="supporting-text">{methodologyAnalysis.potential_weakness}</p>
           <ul className="mini-list">
-            {(methodologyAnalysis.missing_information || []).map((item) => <li key={item}>{item}</li>)}
+            {(methodologyAnalysis.missing_information || []).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
           </ul>
           <p className="supporting-text"><strong>Action:</strong> {methodologyAnalysis.actionable_suggestion}</p>
         </section>
@@ -1067,8 +1096,8 @@ function ContributionPage({ contributionAnalysis, setActive }) {
         </div>
       </section>
       <div className="detail-grid two-col">
-        <section className="panel"><h2>Evidence detected</h2><ul className="mini-list">{(contributionAnalysis.strengths || []).map((item) => <li key={item}>{item}</li>)}</ul></section>
-        <section className="panel"><h2>Missing evidence</h2><ul className="mini-list">{(contributionAnalysis.recommendations || []).map((item) => <li key={item}>{item}</li>)}</ul></section>
+        <section className="panel"><h2>Evidence detected</h2><ul className="mini-list">{(contributionAnalysis.strengths || []).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></section>
+        <section className="panel"><h2>Missing evidence</h2><ul className="mini-list">{(contributionAnalysis.recommendations || []).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></section>
       </div>
     </>
   )
@@ -1145,7 +1174,7 @@ function FormattingPage({ document, selectedJournalId, selectedJournal, setActiv
       {result && (
         <div className="detail-grid two-col">
           <section className="panel"><h2>Applied rule values</h2><pre className="rules-output">{JSON.stringify(result.applied_rules, null, 2)}</pre></section>
-          <section className="panel"><h2>Warnings</h2>{result.warnings?.length ? <ul className="mini-list">{result.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul> : <p className="supporting-text">No formatter warnings were reported.</p>}</section>
+          <section className="panel"><h2>Warnings</h2>{result.warnings?.length ? <ul className="mini-list">{result.warnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}</ul> : <p className="supporting-text">No formatter warnings were reported.</p>}</section>
         </div>
       )}
       {!result && !error && <div className="status-box">Run the profile check to see the rules currently recognized by the formatter.</div>}
@@ -1153,37 +1182,78 @@ function FormattingPage({ document, selectedJournalId, selectedJournal, setActiv
   )
 }
 
-function ImprovementsPage({ improvements, setActive }) {
+function ImprovementsPage({ improvements, decisions, onDecision, setActive }) {
   if (!improvements?.document_id) return <AnalysisRequired setActive={setActive} />
+  const suggestions = improvements.suggestions || []
+  const acceptedCount = suggestions.filter((suggestion) => decisions[suggestion.id] === 'accepted').length
+  const deniedCount = suggestions.filter((suggestion) => decisions[suggestion.id] === 'denied').length
+  const pendingCount = suggestions.length - acceptedCount - deniedCount
   return (
     <>
       <section className="page-intro">
         <div>
           <p className="kicker">RESEARCHER CONTROL</p>
           <h1>AI improvement suggestions<span className="period">.</span></h1>
-          <p className="subtitle">Suggestions are advisory and do not modify the uploaded manuscript.</p>
+          <p className="subtitle">Suggestions are advisory and do not modify the uploaded manuscript unless you accept them into the final export.</p>
         </div>
-        <button type="button" className="primary-button" onClick={() => setActive('report')}>Open readiness report <ArrowUpRight size={16} /></button>
+        <button type="button" className="primary-button" onClick={() => setActive('export')}>Export accepted changes <ArrowUpRight size={16} /></button>
       </section>
+      {suggestions.length > 0 && (
+        <section className="stats-grid compact-grid">
+          <Stat label="Suggestions" value={suggestions.length} detail="total recommendations" icon={Zap} />
+          <Stat label="Accepted" value={acceptedCount} detail="will be applied on export" icon={Check} green />
+          <Stat label="Denied" value={deniedCount} detail="kept out of the export" icon={X} />
+          <Stat label="Pending" value={pendingCount} detail="awaiting your decision" icon={MoreHorizontal} />
+        </section>
+      )}
       <div className="improvement-list">
-        {(improvements.suggestions || []).map((item) => (
-          <div key={item.id} className="panel improvement-card">
-            <div className="improvement-header">
-              <span>{item.section}</span>
-            </div>
-            <div className="comparison-grid">
-              <div>
-                <label>Original</label>
-                <p>{item.original}</p>
+        {suggestions.map((item) => {
+          const decision = decisions[item.id] || 'pending'
+          return (
+            <div key={item.id} className={`panel improvement-card ${decision === 'accepted' ? 'accepted-change' : ''} ${decision === 'denied' ? 'denied-change' : ''}`}>
+              <div className="improvement-header">
+                <span>{item.section}</span>
+                <span className={`decision-badge ${decision}`}>{decision === 'accepted' ? 'Accepted' : decision === 'denied' ? 'Denied' : 'Pending'}</span>
               </div>
-              <div>
-                <label>Suggested improvement</label>
-                <p>{item.suggested}</p>
+              <div className="comparison-grid">
+                <div>
+                  <label>Original</label>
+                  <p>{item.original}</p>
+                </div>
+                <div>
+                  <label>Suggested improvement</label>
+                  <p>{item.suggested}</p>
+                </div>
+              </div>
+              <div className="button-row decision-actions">
+                <button
+                  type="button"
+                  className={decision === 'accepted' ? 'primary-button' : 'outline-button'}
+                  onClick={() => onDecision(item.id, 'accepted')}
+                >
+                  <Check size={15} /> Accept
+                </button>
+                <button
+                  type="button"
+                  className={decision === 'denied' ? 'danger-button' : 'outline-button'}
+                  onClick={() => onDecision(item.id, 'denied')}
+                >
+                  <X size={15} /> Deny
+                </button>
+                {decision !== 'pending' && (
+                  <button type="button" className="text-button" onClick={() => onDecision(item.id, 'pending')}>Reset</button>
+                )}
               </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
+      {acceptedCount > 0 && (
+        <div className="status-box success-box" role="status">
+          <strong>{acceptedCount} improvement(s) accepted.</strong>
+          <span>Accepted changes are applied when you generate the submission package on the Export page.</span>
+        </div>
+      )}
     </>
   )
 }
@@ -1215,7 +1285,7 @@ function ReportPage({ report, setActive }) {
         <section className="panel report-panel">
           <div className="panel-heading"><div><p className="kicker">CHECKLIST</p><h2>Final checklist</h2></div></div>
           <ul className="mini-list">
-            {(report.final_checklist || []).map((item) => <li key={item}>{item}</li>)}
+            {(report.final_checklist || []).map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}
           </ul>
         </section>
       </div>
@@ -1223,7 +1293,7 @@ function ReportPage({ report, setActive }) {
   )
 }
 
-function ExportPage({ document, selectedJournal, selectedJournalId, setActive }) {
+function ExportPage({ document, selectedJournal, selectedJournalId, approvedChanges, setActive }) {
   const [exportStatus, setExportStatus] = useState('idle')
   const [exportMessage, setExportMessage] = useState('Format and generate the journal-aligned submission package.')
   const [exportError, setExportError] = useState('')
@@ -1236,13 +1306,21 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
     }
     setExportError('')
     setExportStatus('working')
-    setExportMessage('Applying journal template and building submission package...')
+    setExportMessage(`Applying journal template and building submission package... (${approvedChanges.length} accepted improvement(s))`)
     try {
       await researchApi.formatDocument(document.document_id, { journal_id: selectedJournalId })
-      const generated = await researchApi.generateDocument(document.document_id, { journal_id: selectedJournalId })
+      const generated = await researchApi.generateDocument(document.document_id, {
+        journal_id: selectedJournalId,
+        approved_changes: approvedChanges,
+      })
       setExportWarnings(generated.formatting_warnings || [])
+      const applied = generated?.approved_changes?.applied?.length || 0
+      const skipped = generated?.approved_changes?.skipped?.length || 0
       setExportStatus('ready')
-      setExportMessage(`Submission package is ready. ${generated.pdf_rendering?.message || ''}`)
+      setExportMessage(
+        `Submission package is ready. ${applied} of ${approvedChanges.length} accepted improvement(s) were applied` +
+        `${applied > 0 ? ' to the final manuscript' : ''}. ${skipped ? `${skipped} could not be matched to source text.` : ''} ${generated.pdf_rendering?.message || ''}`
+      )
     } catch (error) {
       setExportStatus('error')
       setExportError(error.message || 'Export failed.')
@@ -1293,11 +1371,12 @@ function ExportPage({ document, selectedJournal, selectedJournalId, setActive })
           <strong>{exportStatus === 'working' ? 'Generating...' : exportStatus === 'ready' ? 'Ready for export' : 'Generate outputs'}</strong>
           <p>{exportError || exportMessage}</p>
           <p>Manuscript: {document.title || 'Untitled'} · Journal: {selectedJournal?.journal_name || 'Not selected'}</p>
+          <p>Accepted improvements to include: {approvedChanges.length}</p>
         </div>
         {exportWarnings.length > 0 && (
           <div className="status-box" role="status">
             <strong>Formatting warnings</strong>
-            <ul className="mini-list">{exportWarnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+            <ul className="mini-list">{exportWarnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}</ul>
           </div>
         )}
         <div className="button-row export-buttons">

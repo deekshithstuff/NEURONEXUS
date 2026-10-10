@@ -1,23 +1,31 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
-from docx.shared import Inches, Pt
+from docx.shared import Inches, Pt, RGBColor
 
+
+BLACK = RGBColor(0x00, 0x00, 0x00)
 
 PAGE_SIZES = {
     "A4": (Inches(8.27), Inches(11.69)),
     "LETTER": (Inches(8.5), Inches(11.0)),
 }
 
+LEADING_REFERENCE_NUMBER = re.compile(r"^\[\s*\d+(?:\s*[,;\-–]\s*\d+)*\s*\]\s*")
 
-def _set_run_font(run, font_name: str, font_size: int, bold: bool = False) -> None:
+
+def _set_run_font(run, font_name: str, font_size: int, bold: bool | None = None, black: bool = False) -> None:
     run.font.name = font_name
     run.font.size = Pt(font_size)
-    run.bold = bold
+    if bold is not None:
+        run.bold = bold
+    if black:
+        run.font.color.rgb = BLACK
     rpr = run._element.get_or_add_rPr()
     rfonts = rpr.get_or_add_rFonts()
     rfonts.set(qn("w:ascii"), font_name)
@@ -58,7 +66,7 @@ class DOCXGenerator:
         title_para = doc.add_paragraph()
         title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         title_run = title_para.add_run(title)
-        _set_run_font(title_run, font_name, font_size + 4, bold=True)
+        _set_run_font(title_run, font_name, font_size + 4, bold=True, black=True)
 
         authors = document.get("authors") or []
         if authors:
@@ -78,8 +86,9 @@ class DOCXGenerator:
             heading = manuscript_section.get("heading")
             if heading:
                 heading_para = doc.add_heading(heading, level=min(int(manuscript_section.get("level") or 1), 4))
+                heading_para.style.font.color.rgb = BLACK
                 for run in heading_para.runs:
-                    _set_run_font(run, font_name, font_size + 2, bold=True)
+                    _set_run_font(run, font_name, font_size + 2, bold=True, black=True)
             content = manuscript_section.get("content")
             if content:
                 body = doc.add_paragraph(content)
@@ -122,10 +131,12 @@ class DOCXGenerator:
         )
         if references and not has_reference_section:
             heading = doc.add_heading("References", level=1)
+            heading.style.font.color.rgb = BLACK
             for run in heading.runs:
-                _set_run_font(run, font_name, font_size + 2, bold=True)
+                _set_run_font(run, font_name, font_size + 2, bold=True, black=True)
             for index, reference in enumerate(references, start=1):
                 raw = reference.get("raw_text") or reference.get("text") or ""
+                raw = LEADING_REFERENCE_NUMBER.sub("", raw.strip(), count=1).strip()
                 ref_id = reference.get("id") or str(index)
                 para = doc.add_paragraph(f"[{ref_id}] {raw}".strip())
                 self._apply_spacing(para, line_spacing, paragraph_spacing)
@@ -164,19 +175,29 @@ class DOCXGenerator:
             paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.MULTIPLE
             paragraph.paragraph_format.line_spacing = line_spacing
             paragraph.paragraph_format.space_after = Pt(paragraph_spacing)
-            if title and paragraph.text.strip() == title:
+            is_title_para = bool(title and paragraph.text.strip() == title)
+            if is_title_para:
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            is_heading_para = bool(paragraph.style and paragraph.style.name.lower().startswith("heading"))
+            if is_heading_para:
+                paragraph.style.font.color.rgb = BLACK
             for run in paragraph.runs:
-                is_title = bool(title and paragraph.text.strip() == title)
-                is_heading = bool(paragraph.style and paragraph.style.name.lower().startswith("heading"))
-                _set_run_font(run, font_name, font_size + (4 if is_title else 2 if is_heading else 0), bold=is_title or is_heading or bool(run.bold))
+                is_title = is_title_para
+                is_heading = is_heading_para
+                _set_run_font(
+                    run,
+                    font_name,
+                    font_size + (4 if is_title else 2 if is_heading else 0),
+                    bold=None,
+                    black=is_title or is_heading,
+                )
 
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for paragraph in cell.paragraphs:
                         for run in paragraph.runs:
-                            _set_run_font(run, font_name, font_size, bold=bool(run.bold))
+                            _set_run_font(run, font_name, font_size, bold=None)
 
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         doc.save(output_path)

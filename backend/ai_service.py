@@ -370,44 +370,51 @@ def analyze_completeness(document_id: str, analysis: dict | None = None, journal
 
 def analyze_writing(document_id: str, analysis: dict | None = None) -> dict:
     doc = analysis or {}
-    text = "\n".join(doc.get("paragraphs") or []) or "\n".join(
-        str(section.get("content") or "") for section in doc.get("sections", []) if isinstance(section, dict)
-    )
+    units = [str(paragraph) for paragraph in doc.get("paragraphs") or []]
+    if not units:
+        units = [
+            str(section.get("content") or "")
+            for section in doc.get("sections", [])
+            if isinstance(section, dict)
+        ]
     issues = []
     findings = []
     informal_terms = ("obviously", "awesome", "huge", "a lot of", "kind of")
     vague_terms = ("various", "several", "some studies", "many researchers", "significant")
     seen_sentences: list[str] = []
-    for sentence in re.split(r"(?<=[.!?])\s+", text.strip()):
-        words = sentence.split()
-        if not sentence:
-            continue
-        lower = sentence.lower()
-        if len(words) > 35:
-            problem = f"Long sentence ({len(words)} words) may be difficult to follow."
-            issues.append(problem)
-            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Consider splitting at a clause boundary while preserving the same claims and relationships.", "reason": "Shorter sentences can make technical arguments easier to evaluate."})
-        if any(term in lower for term in informal_terms):
-            problem = "Potentially informal or vague wording was detected."
-            issues.append(problem)
-            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Replace the flagged wording with the precise technical term intended by the authors.", "reason": "Specific terminology is easier to interpret and verify."})
-        if any(term in lower for term in vague_terms) and not re.search(r"\d", sentence):
-            problem = "Vague quantitative language without a number or cited source."
-            issues.append(problem)
-            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Replace vague quantity words with the measured value, sample size, or cited evidence.", "reason": "Reviewers need inspectable quantities rather than unspecified magnitude."})
-        if re.search(r"\b(outperforms|significantly better|clearly superior)\b", lower) and not re.search(r"\d", sentence):
-            problem = "Unsupported comparative claim without a reported quantity."
-            issues.append(problem)
-            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Attach the comparison to a metric, baseline, and measured difference.", "reason": "Comparative claims should be tied to reported evidence."})
-        if re.search(r"\b(?:is|are|was|were|be|been|being)\s+\w+ed\b", lower) and len(words) > 18:
-            problem = "Long passive construction may hide the actor or method."
-            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "If the actor matters, recast in active voice without changing the claim.", "reason": "Active voice can make methods and responsibility clearer."})
-        normalized = re.sub(r"\s+", " ", lower)
-        if normalized in seen_sentences:
-            problem = "Repeated sentence or near-duplicate wording."
-            issues.append(problem)
-            findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Keep one instance and delete the repeated sentence.", "reason": "Redundant sentences add length without new evidence."})
-        seen_sentences.append(normalized)
+    for unit in units:
+        for sentence in re.split(r"(?<=[.!?])\s+", unit.strip()):
+            words = sentence.split()
+            if not sentence:
+                continue
+            lower = sentence.lower()
+            if len(words) > 35:
+                problem = f"Long sentence ({len(words)} words) may be difficult to follow."
+                issues.append(problem)
+                findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Consider splitting at a clause boundary while preserving the same claims and relationships.", "reason": "Shorter sentences can make technical arguments easier to evaluate."})
+            if any(term in lower for term in informal_terms):
+                problem = "Potentially informal or vague wording was detected."
+                issues.append(problem)
+                findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Replace the flagged wording with the precise technical term intended by the authors.", "reason": "Specific terminology is easier to interpret and verify."})
+            if any(term in lower for term in vague_terms) and not re.search(r"\d", sentence):
+                problem = "Vague quantitative language without a number or cited source."
+                issues.append(problem)
+                findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Replace vague quantity words with the measured value, sample size, or cited evidence.", "reason": "Reviewers need inspectable quantities rather than unspecified magnitude."})
+            if re.search(r"\b(outperforms|significantly better|clearly superior)\b", lower) and not re.search(r"\d", sentence):
+                problem = "Unsupported comparative claim without a reported quantity."
+                issues.append(problem)
+                findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Attach the comparison to a metric, baseline, and measured difference.", "reason": "Comparative claims should be tied to reported evidence."})
+            if re.search(r"\b(?:is|are|was|were|be|been|being)\s+\w+ed\b", lower) and len(words) > 18:
+                problem = "Long passive construction may hide the actor or method."
+                findings.append({"original": sentence, "problem": problem, "suggested_improvement": "If the actor matters, recast in active voice without changing the claim.", "reason": "Active voice can make methods and responsibility clearer."})
+            normalized = re.sub(r"\s+", " ", lower)
+            if normalized in seen_sentences:
+                problem = "Repeated sentence or near-duplicate wording."
+                issues.append(problem)
+                findings.append({"original": sentence, "problem": problem, "suggested_improvement": "Keep one instance and delete the repeated sentence.", "reason": "Redundant sentences add length without new evidence."})
+            seen_sentences.append(normalized)
+            if len(findings) >= 20:
+                break
         if len(findings) >= 20:
             break
     if not doc.get("abstract") and "abstract" not in _detected_section_types(doc):
@@ -502,6 +509,98 @@ def generate_improvements(document_id: str, analysis: dict | None = None, focus:
         "approved_changes": [],
         "source_modified": False,
     }
+
+
+def _flexible_search(raw: str, needle: str):
+    """Return a compiled, whitespace-flexible and case-insensitive regex for needle."""
+    parts = [re.escape(part) for part in needle.split() if part]
+    if not parts:
+        return None
+    return re.compile(r"\s+".join(parts), flags=re.IGNORECASE)
+
+
+def _locate_all_text_targets(document: dict, original: str) -> list[dict]:
+    """Find every place in the analysis where original appears.
+
+    Each result is dict with location + mutation metadata. Locations are
+    section content, individual paragraphs, or the abstract.
+    """
+    targets: list[dict] = []
+    sections = document.get("sections") or []
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict):
+            continue
+        raw = str(section.get("content") or "")
+        pattern = _flexible_search(raw, original)
+        if pattern and pattern.search(raw):
+            targets.append({"kind": "section", "index": index, "key": "content", "raw": raw, "expression": pattern})
+    paragraphs = document.get("paragraphs") or []
+    for index, paragraph in enumerate(paragraphs):
+        raw = str(paragraph)
+        pattern = _flexible_search(raw, original)
+        if pattern and pattern.search(raw):
+            targets.append({"kind": "paragraph", "index": index, "key": "content", "raw": raw, "expression": pattern})
+    raw = str(document.get("abstract") or "")
+    pattern = _flexible_search(raw, original)
+    if pattern and pattern.search(raw):
+        targets.append({"kind": "abstract", "index": None, "key": "abstract", "raw": raw, "expression": pattern})
+    return targets
+
+
+def apply_approved_changes(analysis: dict | None, approved_changes: list[dict]) -> tuple[dict, list[dict], list[dict]]:
+    """Apply user-accepted improvement suggestions to a copy of the analysis.
+
+    Returns (modified_analysis, applied_changes, skipped_changes).
+    """
+    document = json.loads(json.dumps(analysis or {}, default=str))
+    applied: list[dict] = []
+    skipped: list[dict] = []
+    for change in approved_changes or []:
+        if not change.get("accepted") and not change.get("accept"):
+            skipped.append({**change, "applied": False, "reason": "Change was not accepted by the user."})
+            continue
+        original = _normalize_text(change.get("original") or "")
+        suggested = _normalize_text(
+            change.get("suggested") or change.get("suggestion") or change.get("suggested_action") or ""
+        )
+        if not original or not suggested or original == suggested or original.startswith("No source sentence found"):
+            skipped.append({**change, "applied": False, "reason": "No editable source sentence found for this suggestion."})
+            continue
+        targets = _locate_all_text_targets(document, original)
+        if not targets:
+            skipped.append({**change, "applied": False, "reason": "Original text could not be matched in the manuscript content."})
+            continue
+        matched_any = False
+        locations: list[str] = []
+        for target in targets:
+            match = target["expression"].search(target["raw"])
+            if not match:
+                continue
+            start, end = match.span()
+            replaced = target["raw"][:start] + suggested + target["raw"][end:]
+            if target["kind"] == "section":
+                sections = document.setdefault("sections", [])
+                sections[target["index"]][target["key"]] = replaced
+            elif target["kind"] == "paragraph":
+                document["paragraphs"][target["index"]] = replaced
+            else:
+                document["abstract"] = replaced
+            matched_any = True
+            if target["kind"] not in locations:
+                locations.append(target["kind"])
+        if not matched_any:
+            skipped.append({**change, "applied": False, "reason": "Original text could not be matched in the manuscript content."})
+            continue
+        applied.append({
+            "id": change.get("id"),
+            "section": change.get("section"),
+            "issue": change.get("issue"),
+            "original": original,
+            "suggested": suggested,
+            "applied": True,
+            "location": ", ".join(locations),
+        })
+    return document, applied, skipped
 
 
 def generate_journal_match(document_id: str, analysis: dict | None = None, journal_id: str | None = None) -> dict:

@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from backend.ai_service import analyze_completeness, analyze_contribution, analyze_methodology, analyze_novelty, analyze_writing, generate_improvements, generate_journal_match, generate_readiness_report
+from backend.ai_service import analyze_completeness, analyze_contribution, analyze_methodology, analyze_novelty, analyze_writing, apply_approved_changes, generate_improvements, generate_journal_match, generate_readiness_report
 from backend.citation.validator import validate_citations
 from backend.ai_provider import LocalMockProvider, ai_provider_status, get_ai_provider
 from backend.main import app
@@ -96,6 +96,46 @@ def test_writing_and_improvement_findings_use_actual_text():
     assert all(finding["original"] == source_sentence for finding in writing["sentence_findings"])
     assert improvements["source_modified"] is False
     assert all(item["original"] == source_sentence or item["original"].startswith("No source sentence") for item in improvements["suggestions"])
+
+
+def test_accepted_improvement_applies_literal_replacement():
+    source_sentence = "The proposed system performs a lot of heavy inference tasks."
+    analysis = {
+        "sections": [
+            {"type": "abstract", "heading": "Abstract", "content": source_sentence},
+            {"type": "introduction", "heading": "Introduction", "content": source_sentence},
+        ],
+        "paragraphs": [source_sentence],
+        "keywords": ["model", "inference"],
+    }
+    improvements = generate_improvements("DOC-APPLY", analysis)
+    editable = [
+        suggestion
+        for suggestion in improvements["suggestions"]
+        if not suggestion["original"].startswith("No source sentence")
+    ]
+    assert editable, "expected at least one suggestion with real source text"
+
+    rewritten = "Replace the flagged wording with the precise technical term intended by the authors."
+    approved = [{**editable[0], "accepted": True}]
+    modified, applied, skipped = apply_approved_changes(analysis, approved)
+
+    assert len(applied) == 1
+    assert applied[0]["original"] == source_sentence
+    assert applied[0]["suggested"] == rewritten
+    assert modified["sections"][0]["content"] == rewritten
+    assert modified["paragraphs"][0] == rewritten
+    assert analysis["paragraphs"][0] == source_sentence, "input analysis must not be mutated"
+
+    denied, applied_denied, skipped_denied = apply_approved_changes(analysis, [{**editable[0], "accepted": False}])
+    assert not applied_denied
+    assert skipped_denied[0]["reason"] == "Change was not accepted by the user."
+    assert denied["paragraphs"][0] == source_sentence
+
+    advisory = {"original": "No source sentence found; this recommendation concerns missing or inconsistent content.", "suggested": "Add the section.", "accepted": True}
+    _, applied_advisory, skipped_advisory = apply_approved_changes(analysis, [advisory])
+    assert not applied_advisory
+    assert skipped_advisory[0]["reason"] == "No editable source sentence found for this suggestion."
 
 
 def test_journal_profiles_resolve_complete_generic_rule_schema():

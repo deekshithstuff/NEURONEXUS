@@ -1,11 +1,13 @@
-export const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
+export const API_BASE = import.meta.env.VITE_API_BASE_URL
+  || (import.meta.env.DEV ? '' : 'http://127.0.0.1:8000')
 const AUTH_TOKEN_KEY = 'neuronexus-auth-token'
 
 async function request(path, options = {}) {
-  const headers = new Headers(options.headers || {})
+  const { responseType, ...fetchOptions } = options
+  const headers = new Headers(fetchOptions.headers || {})
   const token = globalThis.sessionStorage?.getItem(AUTH_TOKEN_KEY)
   if (token) headers.set('Authorization', `Bearer ${token}`)
-  const response = await fetch(`${API_BASE}${path}`, { ...options, headers })
+  const response = await fetch(`${API_BASE}${path}`, { ...fetchOptions, headers })
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try {
@@ -17,6 +19,7 @@ async function request(path, options = {}) {
     }
     throw new Error(message)
   }
+  if (responseType === 'blob') return response.blob()
   const type = response.headers.get('content-type') || ''
   return type.includes('application/json') ? response.json() : response.blob()
 }
@@ -41,6 +44,11 @@ export const researchApi = {
   hasStoredAuth: () => Boolean(globalThis.sessionStorage?.getItem(AUTH_TOKEN_KEY)),
   clearAuth: () => globalThis.sessionStorage.removeItem(AUTH_TOKEN_KEY),
   getAiStatus: () => request('/api/ai/status'),
+  getPlagiarismStatus: () => request('/api/plagiarism/status'),
+  startPlagiarismScan: (id, payload) => request(`/api/documents/${id}/plagiarism/scan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  getPlagiarismScan: (scanId) => request(`/api/plagiarism/scans/${scanId}`),
+  getPlagiarismScans: (id) => request(`/api/documents/${id}/plagiarism/scans`),
+  downloadPlagiarismReport: (scanId) => request(`/api/plagiarism/scans/${scanId}/download`, { responseType: 'blob' }),
   getDashboardSummary: () => request('/api/documents/dashboard/summary'),
   getDocuments: () => request('/api/documents'),
   uploadDocument: (file) => {

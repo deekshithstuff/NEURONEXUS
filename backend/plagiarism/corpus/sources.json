@@ -1,0 +1,42 @@
+{
+  "corpus_name": "PaperPilot bundled reference corpus",
+  "description": "A small set of synthetic exemplar texts authored for PaperPilot demonstration and testing. These are not real publications and are not a substitute for a licensed comparison corpus.",
+  "sources": [
+    {
+      "id": "ref-federated-learning",
+      "title": "Synthetic exemplar: communication-efficient federated learning",
+      "authors": ["PaperPilot Exemplar"],
+      "year": "2021",
+      "url": null,
+      "source_type": "bundled_synthetic",
+      "text": "Federated learning enables multiple institutions to collaboratively train a shared prediction model while keeping all training data decentralized. In this work we propose a communication-efficient aggregation strategy that reduces the number of synchronization rounds required for convergence. Our method applies adaptive gradient compression and client sampling to lower bandwidth consumption without degrading predictive accuracy. Experiments across three benchmark datasets demonstrate that the proposed approach matches the accuracy of centralized training while using substantially less communication."
+    },
+    {
+      "id": "ref-transformer-methods",
+      "title": "Synthetic exemplar: transformer training procedure",
+      "authors": ["PaperPilot Exemplar"],
+      "year": "2020",
+      "url": null,
+      "source_type": "bundled_synthetic",
+      "text": "We evaluate the proposed model on three publicly available benchmark datasets. Each document is tokenized using a byte-pair encoding vocabulary of thirty thousand subword units. The encoder consists of twelve stacked self-attention layers with eight attention heads and a hidden dimension of seven hundred sixty-eight. We train for forty epochs using the Adam optimizer with a learning rate of three times ten to the minus four and a linear warmup schedule over the first two thousand steps."
+    },
+    {
+      "id": "ref-machine-learning-review",
+      "title": "Synthetic exemplar: introduction to machine learning research",
+      "authors": ["PaperPilot Exemplar"],
+      "year": "2019",
+      "url": null,
+      "source_type": "bundled_synthetic",
+      "text": "Machine learning has become a central tool in modern scientific research. Supervised algorithms learn a mapping from input features to target labels using labelled examples, whereas unsupervised methods seek structure in unlabelled data. The choice of model class, feature representation, and evaluation protocol strongly influences reported performance. Careful cross-validation and transparent reporting are therefore essential for reproducible results."
+    },
+    {
+      "id": "ref-results-discussion",
+      "title": "Synthetic exemplar: results and discussion",
+      "authors": ["PaperPilot Exemplar"],
+      "year": "2022",
+      "url": null,
+      "source_type": "bundled_synthetic",
+      "text": "The results indicate a consistent improvement over the strongest baseline across all evaluation metrics. Ablation studies confirm that each component of the proposed framework contributes to the final performance. We observe that removing the calibration step reduces accuracy by approximately two percentage points, highlighting its importance. Overall, the findings support the hypothesis that adaptive weighting improves robustness under distribution shift."
+    }
+  ]
+}

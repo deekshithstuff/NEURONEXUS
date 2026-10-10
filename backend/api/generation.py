@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
+from docx import Document
 from starlette.responses import FileResponse
 
-from backend.ai_service import generate_readiness_report
+from backend.ai_service import apply_approved_changes, generate_readiness_report
 from backend.config import OUTPUT_DIR
 from backend.database import connection
 from backend.formatting.formatter import apply_formatting
@@ -25,6 +27,36 @@ def _persist_journal(document_id: str, journal_id: str) -> None:
             "UPDATE documents SET selected_journal_id = ?, status = ? WHERE id = ?",
             (journal_id, "formatted", document_id),
         )
+
+
+def _apply_approved_changes_to_source(source_path: Path, output_path: Path, applied_changes: list[dict]) -> Path:
+    """Rewrite a DOCX source in place so accepted improvements land in the final document."""
+    doc = Document(source_path)
+    for change in applied_changes:
+        original = change.get("original") or ""
+        suggested = change.get("suggested") or ""
+        if not original or not suggested:
+            continue
+        pattern = re.compile(
+            r"\s+".join(re.escape(part) for part in original.split() if part),
+            flags=re.IGNORECASE,
+        )
+        for paragraph in doc.paragraphs:
+            match = pattern.search(paragraph.text)
+            if not match:
+                continue
+            for run in paragraph.runs:
+                if run.text and run.text.strip() and pattern.search(run.text):
+                    run.text = pattern.sub(suggested, run.text, count=1)
+                    match = None
+                    break
+            if match is not None:
+                start, end = match.span()
+                paragraph.runs[0].text = paragraph.text[:start] + suggested + paragraph.text[end:]
+                for extra_run in paragraph.runs[1:]:
+                    extra_run.text = ""
+    doc.save(output_path)
+    return output_path
 
 
 @router.post("/{document_id}/format")
@@ -75,14 +107,23 @@ async def generate_document(
     pdf_path = output_dir / "final_manuscript.pdf"
     readiness_pdf = output_dir / "readiness_report.pdf"
 
+    approved_changes = payload.get("approved_changes") or []
+    applied_changes, skipped_changes = [], []
+    if approved_changes:
+        analysis, applied_changes, skipped_changes = apply_approved_changes(analysis, approved_changes)
     formatting_result = apply_formatting(analysis, journal_rules)
     source_path = Path(document["original_path"])
     source_is_pdf = source_path.suffix.lower() == ".pdf"
+    source_for_generation = None if source_is_pdf else source_path
+    if not source_is_pdf and applied_changes:
+        source_for_generation = _apply_approved_changes_to_source(
+            source_path, output_dir / "source_accepted.docx", applied_changes
+        )
     DOCXGenerator().generate(
         analysis,
         docx_path,
         journal_rules,
-        source_path=source_path if not source_is_pdf else None,
+        source_path=source_for_generation,
     )
     if source_is_pdf:
         formatting_result.warnings.append(
@@ -148,6 +189,10 @@ async def generate_document(
         "submission_package": package,
         "readiness": readiness,
         "formatting_warnings": formatting_result.warnings,
+        "approved_changes": {
+            "applied": applied_changes,
+            "skipped": skipped_changes,
+        },
         "pdf_rendering": {
             "status": "limited_text_rendering",
             "message": "PDF text is extracted from the formatted DOCX; office layout and visual fidelity are not guaranteed because no office renderer is configured.",

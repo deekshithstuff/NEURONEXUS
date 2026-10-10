@@ -12,6 +12,7 @@ AI-powered **Research Paper Automation & Journal Readiness Platform** — upload
 | 4. AI journal readiness & quality | Quality, novelty, methodology, writing, journal match, report (`backend/ai_service.py`, `backend/api/ai.py`) |
 | 5. Publication-ready document generation | DOCX generator with journal styling (`backend/generator/`) |
 | 6. Export & submission package | DOCX/PDF download + submission folder (`POST .../generate`, download endpoints) |
+| 7. Plagiarism & similarity checking | Exact/near-exact matching against an identified corpus, optional semantic engine, optional external provider (`backend/plagiarism/`, Plagiarism tab) |
 
 ## Quick start
 
@@ -39,6 +40,35 @@ Open http://localhost:5173 and sign in or create an account — the dev server p
 
 Optional: set `VITE_API_BASE_URL=http://localhost:8000` in `frontend/.env` if not using the proxy.
 
+## Plagiarism check
+
+The **Plagiarism** tab compares the manuscript against a clearly identified document collection,
+preserves passage locations, and separates attributed overlap (quotations and cited text) from
+suspected unattributed overlap. Similarity is presented as evidence to review, never as proof of
+plagiarism; the report states this explicitly.
+
+- **Internal corpus (default):** `backend/plagiarism/corpus/sources.json` ships synthetic exemplar
+  texts. Point `PAPERPILOT_PLAGIARISM_CORPUS_DIR` at a directory of your own `.txt`/`.md`/`.json`
+  sources to compare against a licensed collection. Manuscripts are never added to the corpus, so
+  content is not shared between accounts.
+- **Semantic engine (optional):** install `sentence-transformers` (`pip install "sentence-transformers>=3,<4"`).
+  Semantic matches are labelled separately and are excluded from plagiarism counts because topical
+  similarity alone is not evidence of plagiarism.
+- **External provider (optional):** set `PAPERPILOT_PLAGIARISM_PROVIDER=copyleaks` plus
+  `COPYLEAKS_EMAIL` and `COPYLEAKS_API_KEY`. Credentials stay on the backend and are never sent to the
+  frontend. A scan using the external provider requires explicit user consent in the UI and fails
+  cleanly on errors or timeouts without fabricating matches.
+
+Endpoints (all require authentication; scans are scoped to the owning account):
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/plagiarism/status` | Corpus, engine, and provider availability (no credentials) |
+| `POST` | `/api/documents/{id}/plagiarism/scan` | Start a scan (`provider`, `engines`, `consent_external`) |
+| `GET` | `/api/documents/{id}/plagiarism/scans` | List scans for a document |
+| `GET` | `/api/plagiarism/scans/{scan_id}` | Scan status and report |
+| `GET` | `/api/plagiarism/scans/{scan_id}/download` | Download the report as JSON |
+
 ## Typical workflow
 
 1. **Upload** a `.docx` file from Dashboard or Upload.
@@ -51,13 +81,21 @@ Optional: set `VITE_API_BASE_URL=http://localhost:8000` in `frontend/.env` if no
 From the repository root:
 
 ```powershell
-python -m pytest backend\tests\test_pipeline.py -q
+python -m pytest backend\tests -q
+```
+
+Frontend integration tests (Vitest + Testing Library):
+
+```powershell
+cd frontend
+npm test
 ```
 
 ## Project layout
 
-- `backend/` — FastAPI API, document engine, citations, formatting, PDF/DOCX generation
-- `frontend/` — PaperPilot UI (`src/App.jsx`, `src/services/api.js`)
+- `backend/` — FastAPI API, document engine, citations, formatting, plagiarism checker, PDF/DOCX generation
+- `backend/plagiarism/` — corpus loading, lexical/semantic matching, external provider, scan service
+- `frontend/` — PaperPilot UI (`src/App.jsx`, `src/PlagiarismPage.jsx`, `src/services/api.js`)
 
 ## Team / deliverables
 

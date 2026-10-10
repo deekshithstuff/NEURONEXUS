@@ -45,6 +45,20 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     expires_at INTEGER NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+CREATE TABLE IF NOT EXISTS plagiarism_scans (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'internal',
+    engines_json TEXT,
+    consent_external INTEGER NOT NULL DEFAULT 0,
+    report_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(document_id) REFERENCES documents(id)
+);
 """
 
 @contextmanager
