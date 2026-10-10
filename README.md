@@ -94,7 +94,9 @@ npm test
 ## Project layout
 
 - `backend/` — FastAPI API, document engine, citations, formatting, plagiarism checker, PDF/DOCX generation
-- `backend/plagiarism/` — corpus loading, lexical/semantic matching, external provider, scan service
+- `backend/plagiarism/` — corpus loading, lexical/semantic matching, feature extraction, classifier utilities, external provider, scan service
+- `backend/training/` — dataset preparation, model training, and evaluation scripts for supervised plagiarism detection
+- `models/plagiarism/` and `data/plagiarism/` — persisted model artifacts and labeled training data
 - `frontend/` — PaperPilot UI (`src/App.jsx`, `src/PlagiarismPage.jsx`, `src/services/api.js`)
 
 ## Team / deliverables
