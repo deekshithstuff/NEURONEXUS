@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUpRight,
   BarChart3,
@@ -13,6 +13,8 @@ import {
   Gauge,
   Globe2,
   LogOut,
+  History,
+  MessageSquareText,
   Moon,
   MoreHorizontal,
   PanelLeft,
@@ -46,6 +48,7 @@ const navigation = [
   { label: 'Report', icon: ShieldCheck, id: 'report' },
   { label: 'Formatting', icon: FileText, id: 'formatting' },
   { label: 'Export', icon: FolderOpen, id: 'export' },
+  { label: 'Review & versions', icon: History, id: 'review' },
 ]
 
 const defaultAnalysis = {
@@ -120,6 +123,9 @@ function ResearchWorkspace({ user, onSignOut }) {
   const [journalMatch, setJournalMatch] = useState({})
   const [improvements, setImprovements] = useState({ suggestions: [] })
   const [improvementDecisions, setImprovementDecisions] = useState({})
+  const [dismissedSuggestions, setDismissedSuggestions] = useState([])
+  const [bulkActionInProgress, setBulkActionInProgress] = useState(false)
+  const analysisRun = useRef(0)
   const [report, setReport] = useState({
     title: 'Pre-Submission Readiness Assessment',
     summary: 'Upload or open an analyzed manuscript to calculate readiness.',
@@ -162,7 +168,22 @@ function ResearchWorkspace({ user, onSignOut }) {
     researchApi.getAiStatus().then(setAiStatus).catch(() => setAiStatus({ status: 'limited_analysis', message: 'AI provider status unavailable; local analysis remains active.' }))
   }, [])
 
-  const loadAnalysisModules = async (documentId, analysisPayload) => {
+  const clearAnalysisState = () => {
+    setCitationReport({ total_citations: 0, total_references: 0 })
+    setQualityAnalysis({})
+    setNoveltyAnalysis({})
+    setMethodologyAnalysis({})
+    setContributionAnalysis({})
+    setCompletenessAnalysis({})
+    setWritingAnalysis({})
+    setJournalMatch({})
+    setImprovements({ suggestions: [] })
+    setImprovementDecisions({})
+    setDismissedSuggestions([])
+    setReport({ title: 'Pre-Submission Readiness Assessment', summary: 'Upload or open an analyzed manuscript to calculate readiness.', sections: [], final_checklist: [] })
+  }
+
+  const loadAnalysisModules = async (documentId, analysisPayload, runId) => {
     const request = { document_id: documentId, analysis: analysisPayload, journal_id: selectedJournalId }
     const [quality, novelty, methodology, contribution, completeness, journal, writing, improvement] = await Promise.all([
       researchApi.analyze('quality', request),
@@ -179,6 +200,7 @@ function ResearchWorkspace({ user, onSignOut }) {
       quality_analysis: quality,
       selected_journal: selectedJournalId,
     })
+    if (analysisRun.current !== runId) return
     setQualityAnalysis(quality)
     setNoveltyAnalysis(novelty)
     setMethodologyAnalysis(methodology)
@@ -195,29 +217,70 @@ function ResearchWorkspace({ user, onSignOut }) {
     setImprovementDecisions((previous) => ({ ...previous, [suggestionId]: decision }))
   }
 
+  const actionableSuggestions = (improvements.suggestions || []).filter((suggestion) => (
+    suggestion.action_type === 'replace_text' && suggestion.can_apply && suggestion.replacement
+  ))
+
+  const acceptAllActionable = async () => {
+    if (bulkActionInProgress) return
+    const pending = actionableSuggestions.filter((item) => improvementDecisions[item.id] !== 'accepted')
+    if (!pending.length) return
+    setBulkActionInProgress(true)
+    try {
+      await Promise.resolve()
+      setImprovementDecisions((previous) => ({
+        ...previous,
+        ...Object.fromEntries(pending.map((item) => [item.id, 'accepted'])),
+      }))
+    } finally {
+      setBulkActionInProgress(false)
+    }
+  }
+
+  const clearAllPending = () => {
+    const pendingIds = (improvements.suggestions || [])
+      .filter((item) => !dismissedSuggestions.includes(item.id)
+        && !['accepted', 'denied'].includes(improvementDecisions[item.id]))
+      .map((item) => item.id)
+    setDismissedSuggestions((previous) => [...new Set([...previous, ...pendingIds])])
+  }
+
   const acceptedImprovements = (improvements.suggestions || [])
-    .filter((suggestion) => improvementDecisions[suggestion.id] === 'accepted')
+    .filter((suggestion) => improvementDecisions[suggestion.id] === 'accepted'
+      && suggestion.action_type === 'replace_text'
+      && suggestion.can_apply
+      && suggestion.replacement)
     .map((suggestion) => ({
       id: suggestion.id,
       section: suggestion.section,
       issue: suggestion.issue,
       original: suggestion.original,
       suggested: suggestion.suggested,
+      replacement: suggestion.replacement,
+      action_type: suggestion.action_type,
       accepted: true,
     }))
 
   const openManuscript = async (documentId) => {
+    const runId = ++analysisRun.current
+    clearAnalysisState()
+    setDocument(defaultAnalysis)
+    setActive('manuscripts')
     setManuscriptError('')
     try {
       const record = await researchApi.getDocument(documentId)
+      if (analysisRun.current !== runId) return
       const analysis = record.analysis || await researchApi.analyzeDocument(documentId, { journal_id: selectedJournalId })
+      if (analysisRun.current !== runId) return
       const analysisPayload = { ...defaultAnalysis, ...analysis, document_id: documentId, title: analysis.title || record.filename }
       setDocument(analysisPayload)
       const citationData = await researchApi.getCitations(documentId)
+      if (analysisRun.current !== runId) return
       setCitationReport(citationData)
-      await loadAnalysisModules(documentId, analysisPayload)
-      setActive('analysis')
+      await loadAnalysisModules(documentId, analysisPayload, runId)
+      if (analysisRun.current === runId) setActive('analysis')
     } catch (error) {
+      if (analysisRun.current !== runId) return
       setManuscriptError(error.message || 'Could not open this manuscript.')
       setActive('manuscripts')
     }
@@ -233,28 +296,36 @@ function ResearchWorkspace({ user, onSignOut }) {
     }
 
     setUploadError('')
+    const runId = ++analysisRun.current
+    clearAnalysisState()
+    setDocument(defaultAnalysis)
     setIsUploading(true)
     setStatusMessage('Uploading and analyzing manuscript...')
+    setActive('upload')
 
     try {
       const uploaded = await researchApi.uploadDocument(file)
+      if (analysisRun.current !== runId) return
       const articleId = uploaded.document_id
       const analyzed = await researchApi.analyzeDocument(articleId, { journal_id: selectedJournalId })
+      if (analysisRun.current !== runId) return
       const analysisPayload = { ...defaultAnalysis, ...analyzed, document_id: articleId }
       setDocument(analysisPayload)
       const citationData = await researchApi.getCitations(articleId)
+      if (analysisRun.current !== runId) return
       setCitationReport(citationData)
       await refreshManuscripts()
       setActive('analysis')
       setStatusMessage('Document uploaded, parsed, and analyzed successfully.')
 
-      await loadAnalysisModules(articleId, analysisPayload)
-      setActive('report')
+      await loadAnalysisModules(articleId, analysisPayload, runId)
+      if (analysisRun.current === runId) setActive('report')
     } catch (error) {
+      if (analysisRun.current !== runId) return
       setUploadError(error.message || 'The upload or analysis request failed.')
       setStatusMessage('Upload failed — please retry.')
     } finally {
-      setIsUploading(false)
+      if (analysisRun.current === runId) setIsUploading(false)
       event.target.value = ''
     }
   }
@@ -431,7 +502,7 @@ function ResearchWorkspace({ user, onSignOut }) {
             <UploadPage onUpload={handleFileUpload} isUploading={isUploading} statusMessage={statusMessage} uploadError={uploadError} />
           )}
 
-          {active === 'analysis' && <AnalysisPage document={document} setActive={setActive} citationReport={citationReport} />}
+          {active === 'analysis' && <AnalysisPage document={document} setActive={setActive} citationReport={citationReport} qualityAnalysis={qualityAnalysis} />}
           {active === 'citations' && <CitationPage citationReport={citationReport} document={document} setActive={setActive} />}
           {active === 'plagiarism' && <PlagiarismPage document={document} setActive={setActive} />}
           {active === 'journal' && (
@@ -455,11 +526,17 @@ function ResearchWorkspace({ user, onSignOut }) {
               improvements={improvements}
               decisions={improvementDecisions}
               onDecision={setImprovementDecision}
+              dismissedIds={dismissedSuggestions}
+              onAcceptAll={acceptAllActionable}
+              onClearAll={clearAllPending}
+              onRestoreDismissed={() => setDismissedSuggestions([])}
+              bulkActionInProgress={bulkActionInProgress}
               setActive={setActive}
             />
           )}
           {active === 'report' && <ReportPage report={report} setActive={setActive} />}
           {active === 'formatting' && <FormattingPage document={document} selectedJournalId={selectedJournalId} selectedJournal={selectedJournal} setActive={setActive} />}
+          {active === 'review' && <ReviewPage document={document} />}
           {active === 'export' && (
             <ExportPage
               document={document}
@@ -684,7 +761,7 @@ function UploadPage({ onUpload, isUploading, statusMessage, uploadError }) {
   )
 }
 
-function AnalysisPage({ document, setActive, citationReport }) {
+function AnalysisPage({ document, setActive, citationReport, qualityAnalysis }) {
   const counts = {
     sections: document.sections?.length || 0,
     figures: document.figures?.length || 0,
@@ -693,6 +770,7 @@ function AnalysisPage({ document, setActive, citationReport }) {
     citations: document.citations?.length || 0,
     references: document.references?.length || 0,
   }
+  const documentQuality = qualityAnalysis?.document_id === document.document_id ? qualityAnalysis : null
 
   return (
     <>
@@ -707,11 +785,11 @@ function AnalysisPage({ document, setActive, citationReport }) {
 
       <section className="analysis-hero">
         <div className="analysis-score">
-          <span className="score-ring">92%</span>
+          <span className="score-ring">{documentQuality?.analysis_status === 'insufficient_content' ? '—' : typeof documentQuality?.quality_score === 'number' ? `${documentQuality.quality_score}%` : 'Not assessed'}</span>
           <div>
-            <span className="eyebrow">{document.document_id}</span>
+            <span className="eyebrow">{documentQuality?.analysis_status === 'insufficient_content' ? 'INSUFFICIENT CONTENT' : documentQuality?.document_id ? 'DOCUMENT EVIDENCE SCORE' : 'ANALYSIS PENDING'} · {document.document_id}</span>
             <h2>{document.title}</h2>
-            <p>{document.abstract || 'The manuscript abstract is available after upload and analysis.'}</p>
+            <p>{documentQuality?.analysis_scope || document.abstract || 'Quality analysis is unavailable until analysis completes.'}</p>
           </div>
         </div>
         <div className="analysis-meta">
@@ -1174,7 +1252,7 @@ function FormattingPage({ document, selectedJournalId, selectedJournal, setActiv
       {result && (
         <div className="detail-grid two-col">
           <section className="panel"><h2>Applied rule values</h2><pre className="rules-output">{JSON.stringify(result.applied_rules, null, 2)}</pre></section>
-          <section className="panel"><h2>Warnings</h2>{result.warnings?.length ? <ul className="mini-list">{result.warnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}</ul> : <p className="supporting-text">No formatter warnings were reported.</p>}</section>
+          <section className="panel"><h2>Warnings</h2>{result.warning_details?.length ? <ul className="mini-list">{result.warning_details.map((warning) => <li key={warning.id}><strong>{warning.severity} · {warning.status.replaceAll('_', ' ')}</strong>: {warning.message}</li>)}</ul> : <p className="supporting-text">No formatter warnings were reported.</p>}</section>
         </div>
       )}
       {!result && !error && <div className="status-box">Run the profile check to see the rules currently recognized by the formatter.</div>}
@@ -1182,12 +1260,14 @@ function FormattingPage({ document, selectedJournalId, selectedJournal, setActiv
   )
 }
 
-function ImprovementsPage({ improvements, decisions, onDecision, setActive }) {
+function ImprovementsPage({ improvements, decisions, onDecision, dismissedIds, onAcceptAll, onClearAll, onRestoreDismissed, bulkActionInProgress, setActive }) {
   if (!improvements?.document_id) return <AnalysisRequired setActive={setActive} />
   const suggestions = improvements.suggestions || []
-  const acceptedCount = suggestions.filter((suggestion) => decisions[suggestion.id] === 'accepted').length
-  const deniedCount = suggestions.filter((suggestion) => decisions[suggestion.id] === 'denied').length
-  const pendingCount = suggestions.length - acceptedCount - deniedCount
+  const visibleSuggestions = suggestions.filter((suggestion) => !dismissedIds.includes(suggestion.id))
+  const acceptedCount = visibleSuggestions.filter((suggestion) => decisions[suggestion.id] === 'accepted').length
+  const deniedCount = visibleSuggestions.filter((suggestion) => decisions[suggestion.id] === 'denied').length
+  const pendingCount = visibleSuggestions.filter((suggestion) => !['accepted', 'denied'].includes(decisions[suggestion.id])).length
+  const actionableCount = visibleSuggestions.filter((suggestion) => suggestion.action_type === 'replace_text' && suggestion.can_apply && suggestion.replacement).length
   return (
     <>
       <section className="page-intro">
@@ -1196,18 +1276,24 @@ function ImprovementsPage({ improvements, decisions, onDecision, setActive }) {
           <h1>AI improvement suggestions<span className="period">.</span></h1>
           <p className="subtitle">Suggestions are advisory and do not modify the uploaded manuscript unless you accept them into the final export.</p>
         </div>
-        <button type="button" className="primary-button" onClick={() => setActive('export')}>Export accepted changes <ArrowUpRight size={16} /></button>
+        <div className="button-row improvement-toolbar">
+          <button type="button" className="outline-button" onClick={onAcceptAll} disabled={bulkActionInProgress || actionableCount === 0}>Accept All</button>
+          <button type="button" className="outline-button" onClick={onClearAll} disabled={pendingCount === 0} title="Dismiss pending suggestions only; accepted and denied items are preserved.">Clear All</button>
+          <button type="button" className="primary-button" onClick={() => setActive('export')}>Export accepted changes <ArrowUpRight size={16} /></button>
+        </div>
       </section>
-      {suggestions.length > 0 && (
+      {visibleSuggestions.length > 0 && (
         <section className="stats-grid compact-grid">
-          <Stat label="Suggestions" value={suggestions.length} detail="total recommendations" icon={Zap} />
-          <Stat label="Accepted" value={acceptedCount} detail="will be applied on export" icon={Check} green />
+          <Stat label="Suggestions" value={visibleSuggestions.length} detail="visible recommendations" icon={Zap} />
+          <Stat label="Accepted" value={acceptedCount} detail="validated edits queued for export" icon={Check} green />
           <Stat label="Denied" value={deniedCount} detail="kept out of the export" icon={X} />
           <Stat label="Pending" value={pendingCount} detail="awaiting your decision" icon={MoreHorizontal} />
         </section>
       )}
+      {dismissedIds.length > 0 && <div className="status-box" role="status"><strong>{dismissedIds.length} pending suggestion(s) dismissed.</strong><p>Accepted and denied items are unchanged.</p><button type="button" className="text-button" onClick={onRestoreDismissed}>Restore dismissed suggestions</button></div>}
+      {visibleSuggestions.length > 0 && actionableCount === 0 && <div className="status-box">These findings are advisory and need author judgment. No validated replacement text is available for automatic application.</div>}
       <div className="improvement-list">
-        {suggestions.map((item) => {
+        {visibleSuggestions.map((item) => {
           const decision = decisions[item.id] || 'pending'
           return (
             <div key={item.id} className={`panel improvement-card ${decision === 'accepted' ? 'accepted-change' : ''} ${decision === 'denied' ? 'denied-change' : ''}`}>
@@ -1231,7 +1317,7 @@ function ImprovementsPage({ improvements, decisions, onDecision, setActive }) {
                   className={decision === 'accepted' ? 'primary-button' : 'outline-button'}
                   onClick={() => onDecision(item.id, 'accepted')}
                 >
-                  <Check size={15} /> Accept
+                  <Check size={15} /> {item.can_apply && item.action_type === 'replace_text' ? 'Accept edit' : 'Accept recommendation'}
                 </button>
                 <button
                   type="button"
@@ -1248,6 +1334,7 @@ function ImprovementsPage({ improvements, decisions, onDecision, setActive }) {
           )
         })}
       </div>
+      {visibleSuggestions.length === 0 && dismissedIds.length === 0 && <div className="status-box">No suggestions were generated for this manuscript.</div>}
       {acceptedCount > 0 && (
         <div className="status-box success-box" role="status">
           <strong>{acceptedCount} improvement(s) accepted.</strong>
@@ -1298,6 +1385,7 @@ function ExportPage({ document, selectedJournal, selectedJournalId, approvedChan
   const [exportMessage, setExportMessage] = useState('Format and generate the journal-aligned submission package.')
   const [exportError, setExportError] = useState('')
   const [exportWarnings, setExportWarnings] = useState([])
+  const [downloadUrls, setDownloadUrls] = useState({})
 
   const runExport = async () => {
     if (!document?.document_id) {
@@ -1305,6 +1393,7 @@ function ExportPage({ document, selectedJournal, selectedJournalId, approvedChan
       return
     }
     setExportError('')
+    setDownloadUrls({})
     setExportStatus('working')
     setExportMessage(`Applying journal template and building submission package... (${approvedChanges.length} accepted improvement(s))`)
     try {
@@ -1313,7 +1402,15 @@ function ExportPage({ document, selectedJournal, selectedJournalId, approvedChan
         journal_id: selectedJournalId,
         approved_changes: approvedChanges,
       })
-      setExportWarnings(generated.formatting_warnings || [])
+      const formats = ['docx', 'pdf', 'report', 'zip']
+      const authorizedDownloads = Object.fromEntries(await Promise.all(
+        formats.map(async (format) => [
+          format,
+          await researchApi.buildDownloadUrl(`/api/documents/${document.document_id}/download/${format}`),
+        ])
+      ))
+      setDownloadUrls(authorizedDownloads)
+      setExportWarnings(generated.formatting_warning_details || (generated.formatting_warnings || []).map((message, index) => ({ id: `legacy-${index}`, message, severity: 'info', status: 'manual_review' })))
       const applied = generated?.approved_changes?.applied?.length || 0
       const skipped = generated?.approved_changes?.skipped?.length || 0
       setExportStatus('ready')
@@ -1328,31 +1425,13 @@ function ExportPage({ document, selectedJournal, selectedJournalId, approvedChan
     }
   }
 
-  const downloadFile = async (format) => {
-    try {
-      const names = {
-        pdf: 'final_manuscript.pdf',
-        report: 'readiness_report.pdf',
-        zip: 'submission_package.zip',
-        docx: 'final_manuscript.docx',
-      }
-      const fileName = names[format] || `manuscript.${format}`
-      const blob = await researchApi.download(document.document_id, format)
-      const url = URL.createObjectURL(blob)
-      const link = globalThis.document.createElement('a')
-      link.href = url
-      link.download = fileName
-      link.rel = 'noopener'
-      link.style.display = 'none'
-      globalThis.document.body.appendChild(link)
-      link.click()
-      setTimeout(() => {
-        link.remove()
-        URL.revokeObjectURL(url)
-      }, 1500)
-    } catch (error) {
-      setExportError(error.message || `Could not download ${format.toUpperCase()}.`)
+  const downloadFile = (format) => {
+    const downloadUrl = downloadUrls[format]
+    if (!downloadUrl) {
+      setExportError('Generate the submission package again to authorize downloads.')
+      return
     }
+    globalThis.location.assign(downloadUrl)
   }
 
   return (
@@ -1376,7 +1455,7 @@ function ExportPage({ document, selectedJournal, selectedJournalId, approvedChan
         {exportWarnings.length > 0 && (
           <div className="status-box" role="status">
             <strong>Formatting warnings</strong>
-            <ul className="mini-list">{exportWarnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}</ul>
+            <ul className="mini-list">{exportWarnings.map((warning) => <li key={warning.id}><strong>{warning.severity} · {warning.status.replaceAll('_', ' ')}</strong>: {warning.message}</li>)}</ul>
           </div>
         )}
         <div className="button-row export-buttons">
@@ -1389,6 +1468,93 @@ function ExportPage({ document, selectedJournal, selectedJournalId, approvedChan
           <button type="button" className="outline-button" onClick={() => downloadFile('zip')} disabled={exportStatus !== 'ready'}>Submission ZIP</button>
         </div>
       </section>
+    </>
+  )
+}
+
+function ReviewPage({ document }) {
+  const [versions, setVersions] = useState([])
+  const [comments, setComments] = useState([])
+  const [draft, setDraft] = useState('')
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!document?.document_id) return
+    let active = true
+    Promise.all([
+      researchApi.getDocumentVersions(document.document_id),
+      researchApi.getReviewComments(document.document_id),
+    ]).then(([versionBody, commentBody]) => {
+      if (!active) return
+      setVersions(versionBody.versions || [])
+      setComments(commentBody.comments || [])
+      setError('')
+    }).catch((loadError) => {
+      if (active) setError(loadError.message || 'Could not load review history.')
+    })
+    return () => { active = false }
+  }, [document?.document_id])
+
+  const addComment = async (event) => {
+    event.preventDefault()
+    const content = draft.trim()
+    if (!content || !document?.document_id) return
+    setSaving(true)
+    setError('')
+    try {
+      const saved = await researchApi.addReviewComment(document.document_id, content)
+      setComments((previous) => [saved, ...previous])
+      setDraft('')
+    } catch (saveError) {
+      setError(saveError.message || 'Could not save review note.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!document?.document_id) return <section className="status-box"><strong>No manuscript selected.</strong><p>Open an analyzed manuscript to view its versions and review notes.</p></section>
+
+  return (
+    <>
+      <section className="page-intro">
+        <div>
+          <p className="kicker">MANUSCRIPT HISTORY</p>
+          <h1>Review & versions<span className="period">.</span></h1>
+          <p className="subtitle">Generated exports are saved as immutable versions. Review notes are private to this account.</p>
+        </div>
+      </section>
+      {error && <div className="status-box error-box" role="alert">{error}</div>}
+      <div className="detail-grid two-col">
+        <section className="panel">
+          <div className="panel-heading"><div><p className="kicker">GENERATED OUTPUTS</p><h2>Version history</h2></div></div>
+          {versions.length ? <div className="history-list">
+            {versions.map((version) => (
+              <article className="history-row" key={version.id}>
+                <div className="history-icon"><History size={17} /></div>
+                <div><strong>Version {version.version_number}</strong><span>{version.journal_id} · {(version.files || []).join(', ')}</span></div>
+                <time>{version.created_at}</time>
+              </article>
+            ))}
+          </div> : <p className="supporting-text">No generated versions yet. Create a submission package to record the first version.</p>}
+        </section>
+        <section className="panel">
+          <div className="panel-heading"><div><p className="kicker">REVIEW NOTES</p><h2>Keep a record</h2></div></div>
+          <form className="review-form" onSubmit={addComment}>
+            <label htmlFor="review-note">Review note</label>
+            <textarea id="review-note" value={draft} onChange={(event) => setDraft(event.target.value)} maxLength={5000} required />
+            <button type="submit" className="primary-button" disabled={saving || !draft.trim()}><MessageSquareText size={15} />{saving ? 'Saving...' : 'Add note'}</button>
+          </form>
+          <div className="history-list">
+            {comments.map((comment) => (
+              <article className="review-note" key={comment.id}>
+                <div><strong>{comment.author}</strong><time>{comment.created_at || 'Just now'}</time></div>
+                <p>{comment.content}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
     </>
   )
 }

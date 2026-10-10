@@ -2,6 +2,44 @@ export const API_BASE = import.meta.env.VITE_API_BASE_URL
   || (import.meta.env.DEV ? '' : 'http://127.0.0.1:8000')
 const AUTH_TOKEN_KEY = 'neuronexus-auth-token'
 
+export async function buildDownloadUrl(path) {
+  const token = globalThis.sessionStorage?.getItem(AUTH_TOKEN_KEY)
+  if (!token) {
+    const target = path.startsWith('http') ? path : `${API_BASE}${path}`
+    return new URL(target, globalThis.location?.origin || 'http://localhost:5173').toString()
+  }
+
+  const downloadPath = path.replace(/^\//, '')
+  const documentMatch = downloadPath.match(/api\/documents\/([^/]+)\/download\/([^/?]+)/)
+  if (documentMatch) {
+    const [, documentId, fileFormat] = documentMatch
+    const response = await fetch(`${API_BASE}/api/documents/${documentId}/download-token/${fileFormat}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      throw new Error('Could not authorize browser download.')
+    }
+    const body = await response.json()
+    return new URL(`${API_BASE}${body.download_url}`, globalThis.location?.origin || 'http://localhost:5173').toString()
+  }
+
+  const plagiarismMatch = downloadPath.match(/api\/plagiarism\/scans\/([^/]+)\/download/)
+  if (plagiarismMatch) {
+    const [, scanId] = plagiarismMatch
+    const response = await fetch(`${API_BASE}/api/plagiarism/scans/${scanId}/download-token`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      throw new Error('Could not authorize plagiarism report download.')
+    }
+    const body = await response.json()
+    return new URL(`${API_BASE}${body.download_url}`, globalThis.location?.origin || 'http://localhost:5173').toString()
+  }
+
+  const target = path.startsWith('http') ? path : `${API_BASE}${path}`
+  return new URL(target, globalThis.location?.origin || 'http://localhost:5173').toString()
+}
+
 async function request(path, options = {}) {
   const { responseType, ...fetchOptions } = options
   const headers = new Headers(fetchOptions.headers || {})
@@ -57,6 +95,9 @@ export const researchApi = {
     return request('/api/documents/upload', { method: 'POST', body })
   },
   getDocument: (id) => request(`/api/documents/${id}`),
+  getDocumentVersions: (id) => request(`/api/documents/${id}/versions`),
+  getReviewComments: (id) => request(`/api/documents/${id}/review-comments`),
+  addReviewComment: (id, content) => request(`/api/documents/${id}/review-comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }) }),
   analyzeDocument: (id, payload = {}) => request(`/api/documents/${id}/analyze`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   getStructure: (id) => request(`/api/documents/${id}/structure`),
   getSavedAnalysis: (id, module) => request(`/api/documents/${id}/analysis/${module}`),
@@ -71,4 +112,5 @@ export const researchApi = {
   formatDocument: (id, payload) => request(`/api/documents/${id}/format`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   generateDocument: (id, payload) => request(`/api/documents/${id}/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   download: (id, format) => request(`/api/documents/${id}/download/${format}`),
+  buildDownloadUrl: (path) => buildDownloadUrl(path),
 }

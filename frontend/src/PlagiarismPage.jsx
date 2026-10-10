@@ -121,19 +121,14 @@ export default function PlagiarismPage({ document, setActive }) {
     setIsDownloading(true)
     setError('')
     try {
-      const blob = await researchApi.downloadPlagiarismReport(scan.scan_id)
-      const url = URL.createObjectURL(blob)
       const link = globalThis.document.createElement('a')
-      link.href = url
+      link.href = await researchApi.buildDownloadUrl(`/api/plagiarism/scans/${scan.scan_id}/download`)
       link.download = buildReportFilename(scan.scan_id)
       link.rel = 'noopener'
       link.style.display = 'none'
       globalThis.document.body.appendChild(link)
       link.click()
-      setTimeout(() => {
-        link.remove()
-        URL.revokeObjectURL(url)
-      }, 1500)
+      setTimeout(() => link.remove(), 1500)
     } catch (requestError) {
       setError(requestError.message || 'Could not download the similarity report.')
     } finally {
