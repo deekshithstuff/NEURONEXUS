@@ -1,11 +1,15 @@
 # Plagiarism model artifacts
 
-This directory stores serialized model weights and metadata produced by the training workflow.
+`backend.training.train_classifier` writes:
 
-Expected files include:
+- `plagiarism_classifier.joblib`: fitted scikit-learn Logistic Regression and fitted training-only
+  TF-IDF vectorizer
+- `model_metadata.json`: feature schema, dataset hash, split sizes/distributions, selected validation
+  threshold, and independent test metrics
 
-- plagiarism_classifier.joblib or pickle-based replacement
-- model_metadata.json
-- dataset version or evaluation summaries when generated
+The API loads an artifact lazily from this directory or from the path set in
+`PAPERPILOT_PLAGIARISM_CLASSIFIER_PATH`. No rule-based or random-prediction fallback is used when
+the artifact is absent.
 
-Do not load untrusted model artifacts without validating the dataset and environment first.
+Joblib artifacts are executable serialization formats. Only load artifacts produced from trusted
+datasets and by a trusted training environment.

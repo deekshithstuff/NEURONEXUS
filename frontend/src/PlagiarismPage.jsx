@@ -383,6 +383,32 @@ export default function PlagiarismPage({ document, setActive }) {
             </section>
           </div>
 
+          <section className="panel">
+            <div className="panel-heading">
+              <div><p className="kicker">SUPERVISED SIGNAL</p><h2>Retrieved candidate scores</h2></div>
+            </div>
+            <div className="info-list">
+              <p>{report.classifier?.status?.detail || 'No trained classifier artifact is available.'}</p>
+              <p>{report.classifier?.note || 'Classifier scores are separate from textual matching evidence.'}</p>
+              {(report.classifier?.candidate_scores || []).slice(0, 5).map((candidate, index) => (
+                <article className="plag-match" key={`${candidate.source?.id}-${candidate.passage_location?.paragraph_number}-${index}`}>
+                  <div className="plag-match-source">
+                    <strong>{candidate.source?.title || candidate.source?.id}</strong>
+                    <span>
+                      Paragraph {candidate.passage_location?.paragraph_number ?? '—'} · model score {Number(candidate.positive_score).toFixed(3)} ·
+                      {' '}{candidate.predicted_label === 1 ? 'above' : 'below'} threshold {Number(candidate.threshold).toFixed(2)}
+                    </span>
+                    <span className="plag-snippet">Source passage: {candidate.source_passage}</span>
+                    {candidate.source?.url && <a href={candidate.source.url} target="_blank" rel="noreferrer">View identified source</a>}
+                  </div>
+                </article>
+              ))}
+              {report.classifier?.status?.status === 'completed' && !report.classifier?.candidate_scores?.length && (
+                <p>No source passages were retrieved for supervised scoring.</p>
+              )}
+            </div>
+          </section>
+
           <div className="panel">
             <div className="panel-heading">
               <div><p className="kicker">INTEGRITY</p><h2>How to read this report</h2></div>

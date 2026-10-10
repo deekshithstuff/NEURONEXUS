@@ -10,3 +10,7 @@ backend/data/*.sqlite3
 backend/outputs/
 .env
 *.log
+data/plagiarism/*
+!data/plagiarism/README.md
+models/plagiarism/*.joblib
+models/plagiarism/model_metadata.json

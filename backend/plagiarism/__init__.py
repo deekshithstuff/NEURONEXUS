@@ -8,15 +8,13 @@ signal and never on its own as proof of plagiarism.
 
 The package also exposes modular utilities for preprocessing, exact matching,
 lexical scoring, semantic similarity, feature extraction, and classifier
-training. These helpers are intentionally lightweight so they work in the
-standard project environment without depending on heavy ML libraries that may
-not be installed.
+training.
 """
 
-from .classifier import PlagiarismClassifier, RuleBasedClassifier, evaluate_classifier, feature_matrix, train_classifier
+from .classifier import PlagiarismClassifier, evaluate_classifier, feature_matrix, train_classifier
 from .exact_matcher import ExactMatcher, detect_exact_matches
-from .feature_extractor import FeatureExtractor, extract_features
-from .lexical_matcher import compare_lexical_similarity, lexical_similarity_features
+from .feature_extractor import FEATURE_NAMES, FeatureExtractor, extract_features
+from .lexical_matcher import TfidfSimilarityIndex, compare_lexical_similarity, lexical_similarity_features
 from .preprocessing import normalize_text, normalize_whitespace, sentence_split, split_passages, tokenize
 from .scoring import aggregate_scores, classify_similarity, score_similarity
 from .semantic_matcher import DEFAULT_MODEL, semantic_matches, semantic_similarity, semantic_status
@@ -25,7 +23,7 @@ __all__ = [
     "ExactMatcher",
     "FeatureExtractor",
     "PlagiarismClassifier",
-    "RuleBasedClassifier",
+    "TfidfSimilarityIndex",
     "compare_lexical_similarity",
     "detect_exact_matches",
     "evaluate_classifier",
@@ -45,4 +43,5 @@ __all__ = [
     "classify_similarity",
     "aggregate_scores",
     "DEFAULT_MODEL",
+    "FEATURE_NAMES",
 ]

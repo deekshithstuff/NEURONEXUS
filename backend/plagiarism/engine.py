@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from collections import Counter, defaultdict
 from difflib import SequenceMatcher
+from hashlib import sha256
+import json
 from typing import Any
 
 from backend.citation.validator import validate_citations
@@ -34,6 +36,7 @@ EXACT_COVERAGE = 0.9
 NEAR_EXACT_RATIO = 0.75
 MIN_CANDIDATE_OVERLAP = 4
 MAX_CANDIDATES = 200
+_CORPUS_INDEX_CACHE: dict[str, tuple[list[dict[str, Any]], dict[str, set[int]]]] = {}
 
 BOILERPLATE_PHRASES = {
     "all rights reserved",
@@ -129,18 +132,46 @@ def _is_boilerplate(sentence: str) -> bool:
 
 
 def index_corpus(sources: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, set[int]]]:
+    cache_key = sha256(
+        json.dumps(
+            [
+                {
+                    key: source.get(key)
+                    for key in ("id", "title", "text", "url", "source_type", "authors", "year")
+                }
+                for source in sources
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    cached = _CORPUS_INDEX_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     inverted: dict[str, set[int]] = defaultdict(set)
     sentences: list[dict[str, Any]] = []
     for source in sources:
-        for text, _, _ in split_sentences(source.get("text") or ""):
+        for text, char_start, char_end in split_sentences(source.get("text") or ""):
             tokens = tokenize(text)
             if len(tokens) < MIN_MATCH_WORDS:
                 continue
             index = len(sentences)
-            sentences.append({"source": source, "text": text, "tokens": tokens})
+            sentences.append(
+                {
+                    "source": source,
+                    "text": text,
+                    "tokens": tokens,
+                    "char_start": char_start,
+                    "char_end": char_end,
+                }
+            )
             for token in set(tokens):
                 inverted[token].add(index)
-    return sentences, inverted
+    indexed = (sentences, inverted)
+    _CORPUS_INDEX_CACHE[cache_key] = indexed
+    if len(_CORPUS_INDEX_CACHE) > 8:
+        _CORPUS_INDEX_CACHE.pop(next(iter(_CORPUS_INDEX_CACHE)))
+    return indexed
 
 
 def _candidate_indices(tokens: list[str], inverted: dict[str, set[int]]) -> list[int]:
@@ -210,6 +241,10 @@ def _build_match(passage: dict[str, Any], best: dict[str, Any]) -> dict[str, Any
             "authors": source["authors"],
             "year": source["year"],
         },
+        "source_location": {
+            "char_start": best["source_sentence"]["char_start"],
+            "char_end": best["source_sentence"]["char_end"],
+        },
         "method": method,
         "similarity": round(best["ratio"], 4),
         "coverage": round(best["coverage"], 4),
@@ -243,6 +278,8 @@ def build_report(
     sources: list[dict[str, Any]],
     citation_style: str | None = None,
     analysis: dict[str, Any] | None = None,
+    classifier_results: list[dict[str, Any]] | None = None,
+    classifier_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     numbered = _number_matches(matches)
     source_summary = _source_summary(numbered)
@@ -270,6 +307,14 @@ def build_report(
         "summary": summary,
         "sources": source_summary,
         "matches": numbered,
+        "classifier": {
+            "status": classifier_status or {"engine": "classifier", "status": "unavailable"},
+            "candidate_scores": classifier_results or [],
+            "note": (
+                "Classifier scores are model outputs for retrieved, identified source passages. "
+                "They are separate from exact/near-exact match evidence and are not calibrated confidence."
+            ),
+        },
         "citation_warnings": warnings,
         "exclusions": {
             "references_words_excluded": excluded.get("references_words", 0),
@@ -404,6 +449,14 @@ def analyze(
     total_words = sum(len(passage["tokens"]) for passage in passages)
     corpus_sentences, inverted = index_corpus(sources)
     matches = match_passages(passages, corpus_sentences, inverted)
+    candidate_indices = [_candidate_indices(passage["tokens"], inverted) for passage in passages]
+    from .inference import score_retrieved_pairs
+
+    classifier_results, classifier_engine_status = score_retrieved_pairs(
+        passages,
+        corpus_sentences,
+        candidate_indices,
+    )
     engine_status: list[dict[str, Any]] = [
         {
             "engine": "lexical",
@@ -411,6 +464,7 @@ def analyze(
             "detail": "Exact and near-exact sentence matching against the identified corpus.",
         }
     ]
+    engine_status.append(classifier_engine_status)
     if "semantic" in engines:
         from . import semantic
 
@@ -427,4 +481,6 @@ def analyze(
         sources=sources,
         citation_style=citation_style,
         analysis=analysis,
+        classifier_results=classifier_results,
+        classifier_status=classifier_engine_status,
     )

@@ -12,9 +12,10 @@ from backend.journal.rules import get_journal_rules
 
 from . import external
 from .corpus import corpus_info, load_corpus
-from .engine import build_report, extract_manuscript_passages, index_corpus, match_passages
+from .engine import _candidate_indices, build_report, extract_manuscript_passages, index_corpus, match_passages
 from .engine import analyze as analyze_internal
 from .external import ExternalScanError
+from .inference import classifier_status, score_retrieved_pairs
 from .semantic import semantic_matches, semantic_status
 
 ALLOWED_ENGINES = {"lexical", "semantic"}
@@ -56,6 +57,7 @@ def scan_config() -> dict[str, Any]:
     return {
         "corpus": corpus_info(),
         "semantic": semantic,
+        "classifier": classifier_status(),
         "external": external.external_status(),
         "engines": [
             {"id": "lexical", "label": "Exact and near-exact matching", "available": True},
@@ -170,6 +172,12 @@ def _run_external_scan(
     total_words = sum(len(passage["tokens"]) for passage in passages)
     corpus_sentences, inverted = index_corpus(sources)
     matches = match_passages(passages, corpus_sentences, inverted)
+    candidate_indices = [_candidate_indices(passage["tokens"], inverted) for passage in passages]
+    classifier_results, classifier_engine_status = score_retrieved_pairs(
+        passages,
+        corpus_sentences,
+        candidate_indices,
+    )
     engine_status: list[dict[str, Any]] = [
         {
             "engine": "lexical",
@@ -177,6 +185,7 @@ def _run_external_scan(
             "detail": "Local exact and near-exact matching against the identified corpus.",
         }
     ]
+    engine_status.append(classifier_engine_status)
     if "semantic" in engines:
         semantic, status = semantic_matches(passages, matches, corpus_sentences)
         matches.extend(semantic)
@@ -200,6 +209,8 @@ def _run_external_scan(
         sources=sources,
         citation_style=citation_style,
         analysis=analysis,
+        classifier_results=classifier_results,
+        classifier_status=classifier_engine_status,
     )
     report["external_summary"] = external_result.get("external_summary", {})
     return report

@@ -104,12 +104,17 @@ def _deduplicate(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def corpus_info(sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     sources = sources if sources is not None else load_corpus()
     custom_dir = os.getenv("PAPERPILOT_PLAGIARISM_CORPUS_DIR")
+    demo_count = sum(source.get("source_type") == "bundled_synthetic" for source in sources)
+    custom_count = len(sources) - demo_count
     return {
-        "name": "PaperPilot bundled reference corpus",
+        "name": "Identified PaperPilot comparison corpus",
         "source_count": len(sources),
+        "synthetic_demo_source_count": demo_count,
+        "custom_source_count": custom_count,
         "custom_corpus_dir_configured": bool(custom_dir),
         "description": (
-            "The checker only reports matches against these clearly identified sources. "
-            "Manuscripts are never added to the corpus, so content is not shared between accounts."
+            "The checker compares only with identified bundled synthetic demonstration texts and "
+            "operator-provided local sources. It does not search all published research or the internet. "
+            "Manuscripts are never added to the corpus or shared between accounts."
         ),
     }

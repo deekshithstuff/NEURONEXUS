@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
+import random
+import re
+import unicodedata
 from pathlib import Path
 from typing import Any
-
 
 REQUIRED_FIELDS = {
     "source_document_id",
@@ -13,67 +16,82 @@ REQUIRED_FIELDS = {
     "suspicious_text",
     "label",
 }
+OPTIONAL_GROUP_FIELDS = ("document_group_id", "source_group_id", "derivative_group_id", "group_id")
 
 
 def _coerce_label(value: Any) -> int:
     if isinstance(value, bool):
         return int(value)
-    if isinstance(value, (int, float)):
-        return 1 if int(value) > 0 else 0
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in {"1", "true", "yes", "suspicious", "copy", "plagiarized"}:
-            return 1
-        if lowered in {"0", "false", "no", "clean", "non-match", "original"}:
-            return 0
-    raise ValueError(f"Unsupported label value: {value!r}")
+    if isinstance(value, int) and value in {0, 1}:
+        return value
+    if isinstance(value, str) and value.strip() in {"0", "1"}:
+        return int(value.strip())
+    raise ValueError(f"Labels must be binary integers 0 or 1; received {value!r}.")
+
+
+def _load_rows(source: Path) -> list[dict[str, Any]]:
+    if source.suffix.lower() == ".csv":
+        with source.open("r", encoding="utf-8-sig", newline="") as handle:
+            return list(csv.DictReader(handle))
+    if source.suffix.lower() in {".jsonl", ".ndjson"}:
+        rows = []
+        with source.open("r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Malformed JSONL at line {line_number}: {exc}") from exc
+        return rows
+    if source.suffix.lower() == ".json":
+        with source.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return payload["data"]
+        raise ValueError("JSON datasets must be a list of pairs or an object with a 'data' list.")
+    raise ValueError(f"Unsupported dataset format: {source.suffix}. Use CSV, JSON, or JSONL.")
 
 
 def load_dataset(path: str | Path) -> list[dict[str, Any]]:
     source = Path(path)
-    if source.suffix.lower() == ".csv":
-        with source.open("r", encoding="utf-8", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-    elif source.suffix.lower() in {".jsonl", ".ndjson"}:
-        rows = []
-        with source.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                raw = line.strip()
-                if not raw:
-                    continue
-                rows.append(json.loads(raw))
-    elif source.suffix.lower() == ".json":
-        with source.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        rows = payload if isinstance(payload, list) else payload.get("data", [])
-    else:
-        raise ValueError(f"Unsupported dataset format for {source}")
-
+    if not source.is_file():
+        raise FileNotFoundError(f"Training dataset not found: {source}")
+    rows = _load_rows(source)
     validated: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, str, str]] = set()
-    for row in rows:
-        if not isinstance(row, dict):
+    seen: dict[tuple[str, str, str, str], int] = {}
+    skipped_invalid = 0
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict) or REQUIRED_FIELDS - set(row):
+            skipped_invalid += 1
             continue
-        missing = REQUIRED_FIELDS - set(row)
-        if missing:
-            continue
-        label = _coerce_label(row.get("label"))
-        source_text = str(row.get("source_text") or "")
-        suspicious_text = str(row.get("suspicious_text") or "")
-        if not source_text.strip() or not suspicious_text.strip():
+        try:
+            label = _coerce_label(row["label"])
+        except ValueError as exc:
+            raise ValueError(f"Invalid label in dataset row {index}: {exc}") from exc
+        source_text = str(row.get("source_text") or "").strip()
+        suspicious_text = str(row.get("suspicious_text") or "").strip()
+        source_id = str(row.get("source_document_id") or "").strip()
+        suspicious_id = str(row.get("suspicious_document_id") or "").strip()
+        if not all((source_text, suspicious_text, source_id, suspicious_id)):
+            skipped_invalid += 1
             continue
         key = (
-            str(row.get("source_document_id") or ""),
-            str(row.get("suspicious_document_id") or ""),
-            source_text.strip()[:200],
-            suspicious_text.strip()[:200],
+            min(source_id, suspicious_id),
+            max(source_id, suspicious_id),
+            min(_normalized_fingerprint(source_text), _normalized_fingerprint(suspicious_text)),
+            max(_normalized_fingerprint(source_text), _normalized_fingerprint(suspicious_text)),
         )
+        if key in seen and seen[key] != label:
+            raise ValueError(f"Conflicting labels for duplicate source/suspicious pair in dataset row {index}.")
         if key in seen:
             continue
-        seen.add(key)
-        cleaned = {
-            "source_document_id": str(row.get("source_document_id") or "unknown-source"),
-            "suspicious_document_id": str(row.get("suspicious_document_id") or "unknown-target"),
+        seen[key] = label
+        item: dict[str, Any] = {
+            "source_document_id": source_id,
+            "suspicious_document_id": suspicious_id,
             "source_text": source_text,
             "suspicious_text": suspicious_text,
             "label": label,
@@ -82,46 +100,168 @@ def load_dataset(path: str | Path) -> list[dict[str, Any]]:
             "suspicious_start": row.get("suspicious_start"),
             "suspicious_end": row.get("suspicious_end"),
             "citation_context": row.get("citation_context"),
-            "metadata": row.get("metadata", {}),
+            "metadata": row.get("metadata") if isinstance(row.get("metadata"), dict) else {},
         }
-        validated.append(cleaned)
+        for field in OPTIONAL_GROUP_FIELDS:
+            if row.get(field):
+                item[field] = str(row[field])
+        validated.append(item)
+    if not validated:
+        raise ValueError(
+            f"No usable passage pairs in {source}; required fields are {', '.join(sorted(REQUIRED_FIELDS))}."
+        )
     return validated
 
 
-def split_by_source_group(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    groups: dict[str, list[dict[str, Any]]] = {}
+def _normalized_fingerprint(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    normalized = re.sub(r"\W+", " ", normalized, flags=re.UNICODE).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _group_ids(rows: list[dict[str, Any]]) -> list[str]:
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: str, right: str) -> None:
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    document_nodes: list[tuple[str, str]] = []
     for row in rows:
-        key = row["source_document_id"]
-        groups.setdefault(key, []).append(row)
+        source_id = f"doc:{row['source_document_id']}"
+        suspicious_id = f"doc:{row['suspicious_document_id']}"
+        union(source_id, suspicious_id)
+        document_nodes.append((source_id, suspicious_id))
+        for field in OPTIONAL_GROUP_FIELDS:
+            group_value = row.get(field)
+            if group_value:
+                union(source_id, f"group:{field}:{group_value}")
+                union(suspicious_id, f"group:{field}:{group_value}")
+        union(source_id, f"text:{_normalized_fingerprint(row['source_text'])}")
+        union(suspicious_id, f"text:{_normalized_fingerprint(row['suspicious_text'])}")
+    return [find(source_id) for source_id, _ in document_nodes]
 
-    train: list[dict[str, Any]] = []
-    validation: list[dict[str, Any]] = []
-    test: list[dict[str, Any]] = []
-    for _, group_rows in groups.items():
-        group_rows = list(group_rows)
-        if not group_rows:
+
+def _split_metadata(rows: list[dict[str, Any]], group_ids: list[str]) -> dict[str, Any]:
+    return {
+        "examples": len(rows),
+        "document_groups": len(set(group_ids)),
+        "class_distribution": {
+            "0": sum(row["label"] == 0 for row in rows),
+            "1": sum(row["label"] == 1 for row in rows),
+        },
+        "source_document_count": len({row["source_document_id"] for row in rows}),
+        "suspicious_document_count": len({row["suspicious_document_id"] for row in rows}),
+    }
+
+
+def split_by_document_groups(
+    rows: list[dict[str, Any]],
+    *,
+    random_state: int = 42,
+    attempts: int = 2000,
+) -> dict[str, list[dict[str, Any]]]:
+    if len(rows) < 12 or {int(row["label"]) for row in rows} != {0, 1}:
+        raise ValueError(
+            "At least 12 valid labeled pairs containing both classes are required. "
+            "Provide additional independently sourced and labeled documents."
+        )
+    groups = _group_ids(rows)
+    unique_groups = sorted(set(groups))
+    if len(unique_groups) < 6:
+        raise ValueError(
+            f"Only {len(unique_groups)} independent document groups remain after leakage grouping; "
+            "at least 6 are required to create independent train/validation/test splits. "
+            "Add labeled examples from more unrelated source and suspicious documents."
+        )
+
+    rows_by_group: dict[str, list[dict[str, Any]]] = {}
+    for row, group in zip(rows, groups):
+        rows_by_group.setdefault(group, []).append(row)
+    train_group_count = max(1, round(len(unique_groups) * 0.65))
+    validation_group_count = max(1, round(len(unique_groups) * 0.15))
+    best: dict[str, list[dict[str, Any]]] | None = None
+    best_penalty: float | None = None
+    for attempt in range(attempts):
+        shuffled_groups = list(unique_groups)
+        random.Random(random_state + attempt).shuffle(shuffled_groups)
+        train_groups = set(shuffled_groups[:train_group_count])
+        validation_groups = set(
+            shuffled_groups[train_group_count : train_group_count + validation_group_count]
+        )
+        test_groups = set(shuffled_groups) - train_groups - validation_groups
+        assignments = {
+            "train": [row for group in train_groups for row in rows_by_group[group]],
+            "validation": [row for group in validation_groups for row in rows_by_group[group]],
+            "test": [row for group in test_groups for row in rows_by_group[group]],
+        }
+        if any({row["label"] for row in split} != {0, 1} for split in assignments.values()):
             continue
-        if len(group_rows) <= 2:
-            train.extend(group_rows)
-            continue
-        pivot = max(1, len(group_rows) // 3)
-        train.extend(group_rows[:-pivot])
-        validation.extend(group_rows[-pivot:-max(1, pivot // 2) or None])
-        test.extend(group_rows[-max(1, pivot // 2) :])
-    return train, validation, test
+        # Favor expected proportions without compromising group separation or class coverage.
+        penalty = sum(
+            abs(len(assignments[name]) / len(rows) - target)
+            for name, target in (("train", 0.65), ("validation", 0.15), ("test", 0.20))
+        )
+        if best_penalty is None or penalty < best_penalty:
+            best = assignments
+            best_penalty = penalty
+    if best is None:
+        raise ValueError(
+            "Could not create independent train, validation, and test sets with both labels in every split. "
+            "Add more labeled examples from independent document groups and ensure each class is represented."
+        )
+    return best
 
 
-def prepare_dataset(path: str | Path) -> dict[str, list[dict[str, Any]]]:
-    rows = load_dataset(path)
-    train, validation, test = split_by_source_group(rows)
-    return {"train": train, "validation": validation, "test": test}
+def split_by_source_group(
+    rows: list[dict[str, Any]],
+    *,
+    random_state: int = 42,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    split = split_by_document_groups(rows, random_state=random_state)
+    return split["train"], split["validation"], split["test"]
+
+
+def prepare_dataset(
+    path: str | Path,
+    *,
+    random_state: int = 42,
+) -> dict[str, Any]:
+    source = Path(path)
+    rows = load_dataset(source)
+    splits = split_by_document_groups(rows, random_state=random_state)
+    group_ids = _group_ids(rows)
+    group_lookup = {id(row): group for row, group in zip(rows, group_ids)}
+    summaries = {
+        name: _split_metadata(split, [group_lookup[id(row)] for row in split])
+        for name, split in splits.items()
+    }
+    return {
+        **splits,
+        "metadata": {
+            "dataset_version": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "source_file": source.name,
+            "random_state": random_state,
+            "total_examples": len(rows),
+            "splits": summaries,
+        },
+    }
 
 
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Prepare a plagiarism training dataset.")
-    parser.add_argument("dataset", type=str, help="Path to CSV, JSON, or JSONL dataset.")
+    parser = argparse.ArgumentParser(description="Validate and split labeled passage-pair data.")
+    parser.add_argument("dataset", type=str, help="Dataset path (CSV, JSON, or JSONL).")
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
-    dataset = prepare_dataset(args.dataset)
-    print(json.dumps({"train": len(dataset["train"]), "validation": len(dataset["validation"]), "test": len(dataset["test"])}, indent=2))
+    dataset = prepare_dataset(args.dataset, random_state=args.seed)
+    print(json.dumps(dataset["metadata"], indent=2))

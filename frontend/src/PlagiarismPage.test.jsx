@@ -56,6 +56,20 @@ const REPORT = {
       note: 'Overlaps an identified source.',
     },
   ],
+  classifier: {
+    status: { status: 'completed', detail: 'Trained logistic-regression model loaded.' },
+    note: 'Scores are not calibrated confidence.',
+    candidate_scores: [
+      {
+        source: { id: 'src-1', title: 'Source One', url: 'https://example.test/source' },
+        source_passage: 'Identified source passage.',
+        passage_location: { paragraph_number: 2 },
+        positive_score: 0.75,
+        predicted_label: 1,
+        threshold: 0.55,
+      },
+    ],
+  },
   citation_warnings: [
     { type: 'match_without_citation', severity: 'high', message: 'Paragraph 2 overlaps Source One.', suggestion: 'Add a citation.' },
   ],
@@ -92,6 +106,8 @@ describe('PlagiarismPage', () => {
     expect(screen.getAllByText(/Source One/).length).toBeGreaterThan(0)
     expect(screen.getByText(/match without citation/i)).toBeTruthy()
     expect(screen.getByText(/reference list excluded/i)).toBeTruthy()
+    expect(screen.getByText(/model score 0\.750/i)).toBeTruthy()
+    expect(screen.getByText(/source passage: identified source passage/i)).toBeTruthy()
   })
 
   it('shows an error when the scan fails', async () => {

@@ -1,181 +1,217 @@
 from __future__ import annotations
 
-import json
-import pickle
 from pathlib import Path
 from typing import Any
 
-from .feature_extractor import extract_features
+from .feature_extractor import FEATURE_NAMES, extract_feature_matrix
 
-try:
-    import joblib  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    joblib = None
-
-try:
-    from sklearn.dummy import DummyClassifier
-    from sklearn.linear_model import LogisticRegression
-except Exception:  # pragma: no cover - optional dependency
-    DummyClassifier = None  # type: ignore[assignment]
-    LogisticRegression = None  # type: ignore[assignment]
-
-
-class RuleBasedClassifier:
-    def __init__(self, *, threshold: float = 0.55):
-        self.threshold = threshold
-        self.feature_names: list[str] = [
-            "exact_phrase_match",
-            "word_overlap",
-            "char_overlap",
-            "tfidf_cosine",
-            "semantic_cosine",
-            "distinctive_phrase_ratio",
-            "passage_length_ratio",
-            "citation_context_indicator",
-        ]
-
-    def fit(self, X: list[dict[str, Any]], y: list[int]) -> "RuleBasedClassifier":
-        self._train_count = len(X)
-        return self
-
-    def predict(self, X: list[dict[str, Any]]) -> list[int]:
-        return [int(self._score(row) >= self.threshold) for row in X]
-
-    def predict_proba(self, X: list[dict[str, Any]]) -> list[list[float]]:
-        probabilities: list[list[float]] = []
-        for row in X:
-            score = self._score(row)
-            prob_1 = min(1.0, max(0.0, score))
-            probabilities.append([1.0 - prob_1, prob_1])
-        return probabilities
-
-    def _score(self, row: dict[str, Any]) -> float:
-        score = 0.0
-        score += float(row.get("exact_phrase_match", 0.0)) * 0.45
-        score += float(row.get("word_overlap", 0.0)) * 0.15
-        score += float(row.get("char_overlap", 0.0)) * 0.10
-        score += float(row.get("tfidf_cosine", 0.0)) * 0.20
-        score += float(row.get("semantic_cosine", 0.0)) * 0.10
-        if float(row.get("citation_context_indicator", 0)):
-            score *= 0.8
-        return min(1.0, score)
-
-    def score(self, X: list[dict[str, Any]], y: list[int]) -> float:
-        predictions = self.predict(X)
-        matches = sum(int(pred == actual) for pred, actual in zip(predictions, y))
-        return matches / max(len(y), 1)
+ARTIFACT_VERSION = 1
 
 
 class PlagiarismClassifier:
-    """Classifier wrapper that uses sklearn when available and falls back to a rule-based scorer."""
+    """Supervised logistic-regression passage-pair model."""
 
-    def __init__(self, *, threshold: float = 0.55, random_state: int = 42):
+    def __init__(
+        self,
+        *,
+        threshold: float = 0.5,
+        random_state: int = 42,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         self.threshold = threshold
         self.random_state = random_state
+        self.metadata = metadata or {}
+        self.feature_names = list(FEATURE_NAMES)
         self.model: Any = None
-        self.feature_names: list[str] = [
-            "exact_phrase_match",
-            "word_overlap",
-            "char_overlap",
-            "tfidf_cosine",
-            "semantic_cosine",
-            "distinctive_phrase_ratio",
-            "passage_length_ratio",
-            "citation_context_indicator",
-        ]
-        self._backend = "rule-based"
+        self.tfidf_vectorizer: Any = None
+        self.use_semantic = False
 
-    def fit(self, X: list[dict[str, Any]], y: list[int]) -> "PlagiarismClassifier":
-        if LogisticRegression is not None:
-            self.model = LogisticRegression(random_state=self.random_state, max_iter=500)
-            matrix = [[float(row.get(name, 0.0)) for name in self.feature_names] for row in X]
-            self.model.fit(matrix, y)
-            self._backend = "logistic-regression"
-            return self
-
-        self.model = RuleBasedClassifier(threshold=self.threshold)
-        self.model.fit(X, y)
-        self._backend = "rule-based"
+    def fit(
+        self,
+        X: list[dict[str, Any]],
+        y: list[int],
+        *,
+        tfidf_vectorizer: Any,
+        use_semantic: bool = False,
+    ) -> "PlagiarismClassifier":
+        if len(X) != len(y) or not X:
+            raise ValueError("Training features and labels must have the same non-zero length.")
+        if set(y) != {0, 1}:
+            raise ValueError("Supervised training requires examples from both binary classes 0 and 1.")
+        if tfidf_vectorizer is None or not hasattr(tfidf_vectorizer, "vocabulary_"):
+            raise ValueError("Training requires a fitted TF-IDF vectorizer.")
+        try:
+            from sklearn.linear_model import LogisticRegression
+        except ImportError as exc:
+            raise RuntimeError(
+                "scikit-learn is required for supervised training; install backend\\requirements.txt."
+            ) from exc
+        self.tfidf_vectorizer = tfidf_vectorizer
+        self.use_semantic = use_semantic
+        matrix = self._matrix(X)
+        self.model = LogisticRegression(
+            random_state=self.random_state,
+            max_iter=1000,
+            class_weight="balanced",
+            solver="liblinear",
+        )
+        self.model.fit(matrix, y)
         return self
 
-    def predict(self, X: list[dict[str, Any]]) -> list[int]:
-        if self.model is None:
-            raise ValueError("The classifier has not been fitted yet.")
-        if self._backend == "logistic-regression":
-            matrix = [[float(row.get(name, 0.0)) for name in self.feature_names] for row in X]
-            return [int(value) for value in self.model.predict(matrix)]
-        return self.model.predict(X)
+    def _matrix(self, X: list[dict[str, Any]]) -> list[list[float]]:
+        for index, row in enumerate(X):
+            missing = set(self.feature_names) - set(row)
+            if missing:
+                raise ValueError(
+                    f"Feature row {index} is missing model features: {', '.join(sorted(missing))}"
+                )
+        return [[float(row[name]) for name in self.feature_names] for row in X]
 
     def predict_proba(self, X: list[dict[str, Any]]) -> list[list[float]]:
         if self.model is None:
-            raise ValueError("The classifier has not been fitted yet.")
-        if self._backend == "logistic-regression":
-            matrix = [[float(row.get(name, 0.0)) for name in self.feature_names] for row in X]
-            return self.model.predict_proba(matrix).tolist()
-        return self.model.predict_proba(X)
+            raise ValueError("Classifier artifact has no fitted logistic-regression model.")
+        return self.model.predict_proba(self._matrix(X)).tolist()
 
-    def score(self, X: list[dict[str, Any]], y: list[int]) -> float:
-        if self.model is None:
-            raise ValueError("The classifier has not been fitted yet.")
-        predictions = self.predict(X)
-        matches = sum(int(pred == actual) for pred, actual in zip(predictions, y))
-        return matches / max(len(y), 1)
+    def predict(self, X: list[dict[str, Any]]) -> list[int]:
+        return [int(probabilities[1] >= self.threshold) for probabilities in self.predict_proba(X)]
+
+    def predict_positive_scores(self, X: list[dict[str, Any]]) -> list[float]:
+        return [float(probabilities[1]) for probabilities in self.predict_proba(X)]
 
     def save(self, path: str | Path) -> str:
+        if self.model is None:
+            raise ValueError("Cannot save an untrained classifier.")
+        if self.tfidf_vectorizer is None:
+            raise ValueError("Cannot save a classifier without its fitted TF-IDF vectorizer.")
+        try:
+            import joblib
+        except ImportError as exc:
+            raise RuntimeError(
+                "joblib is required to save the classifier; install backend\\requirements.txt."
+            ) from exc
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "model": self.model,
-            "feature_names": self.feature_names,
-            "backend": self._backend,
-            "threshold": self.threshold,
-            "random_state": self.random_state,
-        }
-        if joblib is not None:
-            joblib.dump(payload, target)
-        else:
-            with target.open("wb") as handle:
-                pickle.dump(payload, handle)
+        joblib.dump(
+            {
+                "artifact_version": ARTIFACT_VERSION,
+                "classifier": self.model,
+                "tfidf_vectorizer": self.tfidf_vectorizer,
+                "feature_names": self.feature_names,
+                "threshold": self.threshold,
+                "random_state": self.random_state,
+                "use_semantic": self.use_semantic,
+                "metadata": self.metadata,
+            },
+            target,
+        )
         return str(target)
 
     @classmethod
     def load(cls, path: str | Path) -> "PlagiarismClassifier":
         target = Path(path)
-        if not target.exists():
-            raise FileNotFoundError(f"Classifier artifact not found: {target}")
-        if joblib is not None:
-            payload = joblib.load(target)
-        else:
-            with target.open("rb") as handle:
-                payload = pickle.load(handle)
-        artifact = cls(threshold=float(payload.get("threshold", 0.55)), random_state=int(payload.get("random_state", 42)))
-        artifact.model = payload["model"]
-        artifact.feature_names = payload.get("feature_names", artifact.feature_names)
-        artifact._backend = payload.get("backend", artifact._backend)
+        if not target.is_file():
+            raise FileNotFoundError(f"Trained plagiarism classifier not found: {target}")
+        try:
+            import joblib
+        except ImportError as exc:
+            raise RuntimeError(
+                "joblib is required to load the classifier; install backend\\requirements.txt."
+            ) from exc
+        try:
+            from sklearn.linear_model import LogisticRegression
+        except ImportError as exc:
+            raise RuntimeError(
+                "scikit-learn is required to load the trained classifier; install backend\\requirements.txt."
+            ) from exc
+        payload = joblib.load(target)
+        if payload.get("artifact_version") != ARTIFACT_VERSION:
+            raise ValueError(f"Unsupported classifier artifact version in {target}.")
+        model = payload.get("classifier")
+        vectorizer = payload.get("tfidf_vectorizer")
+        if not isinstance(model, LogisticRegression) or not hasattr(vectorizer, "vocabulary_"):
+            raise ValueError(f"Invalid or incomplete trained classifier artifact: {target}")
+        artifact = cls(
+            threshold=float(payload["threshold"]),
+            random_state=int(payload["random_state"]),
+            metadata=dict(payload.get("metadata") or {}),
+        )
+        artifact.model = model
+        artifact.tfidf_vectorizer = vectorizer
+        artifact.feature_names = list(payload["feature_names"])
+        artifact.use_semantic = bool(payload.get("use_semantic", False))
+        if artifact.feature_names != list(FEATURE_NAMES):
+            raise ValueError("The artifact feature schema does not match the current inference schema.")
         return artifact
 
 
-def train_classifier(training_pairs: list[dict[str, Any]], *, threshold: float = 0.55, random_state: int = 42) -> PlagiarismClassifier:
-    classifier = PlagiarismClassifier(threshold=threshold, random_state=random_state)
-    features = []
-    labels = []
-    for pair in training_pairs:
-        row = pair.get("features")
-        if row is None:
-            row = extract_features(pair["source_text"], pair["suspicious_text"], citation_context_text=pair.get("citation_context"))
-        features.append(row)
-        labels.append(int(pair.get("label", 0)))
-    classifier.fit(features, labels)
-    return classifier
+def train_classifier(
+    training_pairs: list[dict[str, Any]],
+    *,
+    tfidf_vectorizer: Any,
+    threshold: float = 0.5,
+    random_state: int = 42,
+    use_semantic: bool = False,
+    metadata: dict[str, Any] | None = None,
+) -> PlagiarismClassifier:
+    features = extract_feature_matrix(
+        training_pairs,
+        tfidf_vectorizer=tfidf_vectorizer,
+        use_semantic=use_semantic,
+    )
+    labels = [int(pair["label"]) for pair in training_pairs]
+    return PlagiarismClassifier(
+        threshold=threshold,
+        random_state=random_state,
+        metadata=metadata,
+    ).fit(
+        features,
+        labels,
+        tfidf_vectorizer=tfidf_vectorizer,
+        use_semantic=use_semantic,
+    )
 
 
-def evaluate_classifier(classifier: PlagiarismClassifier, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    features = [row.get("features") or extract_features(row["source_text"], row["suspicious_text"], citation_context_text=row.get("citation_context")) for row in rows]
-    labels = [int(row.get("label", 0)) for row in rows]
+def evaluate_classifier(
+    classifier: PlagiarismClassifier,
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not rows:
+        raise ValueError("Cannot evaluate on an empty independent test set.")
+    try:
+        from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
+    except ImportError as exc:
+        raise RuntimeError(
+            "scikit-learn is required to evaluate the classifier; install backend\\requirements.txt."
+        ) from exc
+    features = extract_feature_matrix(
+        rows,
+        tfidf_vectorizer=classifier.tfidf_vectorizer,
+        use_semantic=classifier.use_semantic,
+    )
+    labels = [int(row["label"]) for row in rows]
     predictions = classifier.predict(features)
-    accuracy = sum(int(pred == label) for pred, label in zip(predictions, labels)) / max(len(labels), 1)
-    return {"accuracy": round(accuracy, 4), "predictions": predictions, "labels": labels}
+    matrix = confusion_matrix(labels, predictions, labels=[0, 1])
+    tn, fp, fn, tp = (int(value) for value in matrix.ravel())
+    return {
+        "accuracy": float(accuracy_score(labels, predictions)),
+        "precision": float(precision_score(labels, predictions, zero_division=0)),
+        "recall": float(recall_score(labels, predictions, zero_division=0)),
+        "f1": float(f1_score(labels, predictions, zero_division=0)),
+        "confusion_matrix": [[tn, fp], [fn, tp]],
+        "false_positive_rate": fp / (fp + tn) if fp + tn else 0.0,
+        "predictions": predictions,
+        "labels": labels,
+    }
 
 
-def feature_matrix(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [row.get("features") or extract_features(row["source_text"], row["suspicious_text"], citation_context_text=row.get("citation_context")) for row in rows]
+def feature_matrix(
+    rows: list[dict[str, Any]],
+    *,
+    tfidf_vectorizer: Any,
+    use_semantic: bool = False,
+) -> list[dict[str, float | int]]:
+    return extract_feature_matrix(
+        rows,
+        tfidf_vectorizer=tfidf_vectorizer,
+        use_semantic=use_semantic,
+    )
