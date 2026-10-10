@@ -8,7 +8,7 @@ from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.ai_service import generate_readiness_report
 from backend.config import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, UPLOAD_DIR
@@ -24,11 +24,15 @@ def generate_document_id() -> str:
         if fetch_one("SELECT 1 FROM documents WHERE id = ?", (document_id,)) is None:
             return document_id
 
-router = APIRouter(prefix="/api/documents", dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api/documents")
 
 
 class AnalysisRequest(BaseModel):
     journal_id: str | None = None
+
+
+class ReviewCommentRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=5000)
 
 
 @router.post("/upload")
@@ -202,3 +206,60 @@ async def get_saved_analysis(
     if not result:
         raise HTTPException(status_code=404, detail="Analysis result is not available yet.")
     return {"document_id": document_id, "module": module, "updated_at": result["updated_at"], "result": json.loads(result["payload_json"])}
+
+
+@router.get("/{document_id}/versions")
+async def get_document_versions(document_id: str, user: dict = Depends(get_current_user)):
+    get_owned_document(document_id, user["id"])
+    rows = fetch_all(
+        "SELECT id, version_number, journal_id, artifacts_json, created_at "
+        "FROM document_versions WHERE document_id = ? ORDER BY version_number DESC",
+        (document_id,),
+    )
+    return {
+        "document_id": document_id,
+        "versions": [
+            {
+                "id": row["id"],
+                "version_number": row["version_number"],
+                "journal_id": row["journal_id"],
+                "files": sorted(json.loads(row["artifacts_json"]).keys()),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get("/{document_id}/review-comments")
+async def get_review_comments(document_id: str, user: dict = Depends(get_current_user)):
+    get_owned_document(document_id, user["id"])
+    rows = fetch_all(
+        "SELECT review_comments.id, review_comments.content, review_comments.created_at, users.name "
+        "FROM review_comments JOIN users ON users.id = review_comments.user_id "
+        "WHERE review_comments.document_id = ? ORDER BY review_comments.created_at DESC, review_comments.id",
+        (document_id,),
+    )
+    return {"document_id": document_id, "comments": [
+        {"id": row["id"], "content": row["content"], "author": row["name"], "created_at": row["created_at"]}
+        for row in rows
+    ]}
+
+
+@router.post("/{document_id}/review-comments", status_code=201)
+async def add_review_comment(
+    document_id: str,
+    request: ReviewCommentRequest,
+    user: dict = Depends(get_current_user),
+):
+    get_owned_document(document_id, user["id"])
+    content = request.content.strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="Review note cannot be blank.")
+    comment_id = str(uuid.uuid4())
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO review_comments(id, document_id, user_id, content) VALUES (?, ?, ?, ?)",
+            (comment_id, document_id, user["id"], content),
+        )
+    return {"id": comment_id, "content": content, "author": user["name"]}

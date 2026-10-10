@@ -9,13 +9,15 @@ from PIL import Image
 from fastapi.testclient import TestClient
 from docx import Document
 
+from backend.config import OUTPUT_DIR
 from backend.generator.pdf_generator import PDFGenerator
 from backend.generator.docx_generator import DOCXGenerator
-from backend.database import connection
+from backend.database import connection, init_db
 from backend.document.parser import DocumentParser
 from backend.main import app
 
 client = TestClient(app)
+init_db()
 account = client.post(
     "/api/auth/register",
     json={"name": "Pipeline test", "email": f"pipeline-{uuid4()}@example.test", "password": "correct-horse-battery"},
@@ -312,6 +314,7 @@ def test_journal_rules_and_generation_flow(tmp_path):
     generate = client.post(f"/api/documents/{doc_id}/generate")
     assert generate.status_code == 200, generate.text
     assert generate.json()["status"] == "generated"
+    assert generate.json()["version"]["version_number"] == 1
     assert generate.json()["pdf_rendering"]["status"] == "limited_text_rendering"
     assert generate.json()["formatting_warnings"]
 
@@ -320,6 +323,14 @@ def test_journal_rules_and_generation_flow(tmp_path):
     assert final_docx_path.exists()
     assert Path(submission["final_pdf"]).exists()
     assert Path(submission["readiness_report"]).exists()
+    versions = client.get(f"/api/documents/{doc_id}/versions")
+    assert versions.status_code == 200
+    assert versions.json()["versions"][0]["files"] == [
+        "final_manuscript.docx", "final_manuscript.pdf", "readiness_report.pdf", "submission_package.zip"
+    ]
+    comment = client.post(f"/api/documents/{doc_id}/review-comments", json={"content": "Verify the methodology before submission."})
+    assert comment.status_code == 201, comment.text
+    assert client.get(f"/api/documents/{doc_id}/review-comments").json()["comments"][0]["content"] == "Verify the methodology before submission."
     readiness_pdf = fitz.open(submission["readiness_report"])
     readiness_text = "\n".join(page.get_text() for page in readiness_pdf)
     assert "Overall readiness:" in readiness_text
@@ -341,6 +352,20 @@ def test_journal_rules_and_generation_flow(tmp_path):
 
     zip_download = client.get(f"/api/documents/{doc_id}/download/zip")
     assert zip_download.status_code == 200
+
+    ieee_generate = client.post(f"/api/documents/{doc_id}/generate", json={"journal_id": "ieee"})
+    assert ieee_generate.status_code == 200, ieee_generate.text
+    assert ieee_generate.json()["version"]["version_number"] == 2
+    nature_version = OUTPUT_DIR / doc_id / "versions" / "version_0001"
+    ieee_version = OUTPUT_DIR / doc_id / "versions" / "version_0002"
+    nature_doc = Document(nature_version / "final_manuscript.docx")
+    ieee_doc = Document(ieee_version / "final_manuscript.docx")
+    assert nature_doc.sections[0].page_width != ieee_doc.sections[0].page_width
+    assert nature_doc.paragraphs[0].runs[0].font.name != ieee_doc.paragraphs[0].runs[0].font.name
+    nature_pdf = fitz.open(nature_version / "final_manuscript.pdf")
+    ieee_pdf = fitz.open(ieee_version / "final_manuscript.pdf")
+    assert nature_pdf[0].rect.width != ieee_pdf[0].rect.width
+    assert client.get(f"/api/documents/{doc_id}/versions").json()["versions"][0]["version_number"] == 2
 
 
 def test_ai_quality_and_report_endpoints(tmp_path):
@@ -476,7 +501,9 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
     assert empty_match.status_code == 200
     empty_body = empty_match.json()
     assert empty_body["journal_id"] == "nature"
-    assert 0.0 <= empty_body["score"] <= 1.0
+    assert empty_body["score"] is None
+    assert empty_body["suitability_score"] is None
+    assert empty_body["match_status"] == "insufficient_content"
     assert isinstance(empty_body["relevant_topics"], list)
     assert isinstance(empty_body["scope_gaps"], list)
     assert empty_body["score"] == 0

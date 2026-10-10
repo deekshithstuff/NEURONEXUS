@@ -5,9 +5,9 @@ from pydantic import BaseModel, Field
 
 from backend.plagiarism import service
 from backend.plagiarism.service import ScanError
-from backend.security import get_current_user
+from backend.security import create_download_token, get_current_user, get_download_user
 
-router = APIRouter(prefix="/api", dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api")
 
 
 class ScanRequest(BaseModel):
@@ -62,8 +62,20 @@ async def get_plagiarism_scan(scan_id: str, user: dict = Depends(get_current_use
         raise HTTPException(status_code=_status_for(str(exc)), detail=str(exc)) from exc
 
 
+@router.get("/plagiarism/scans/{scan_id}/download-token")
+async def create_plagiarism_download_token(scan_id: str, user: dict = Depends(get_current_user)):
+    scan = service.get_scan(scan_id, user)
+    token = create_download_token(user["id"], scan["document_id"], scope="plagiarism")
+    return {
+        "token": token,
+        "expires_in_seconds": 300,
+        "download_url": f"/api/plagiarism/scans/{scan_id}/download?token={token}",
+    }
+
+
 @router.get("/plagiarism/scans/{scan_id}/download")
-async def download_plagiarism_report(scan_id: str, user: dict = Depends(get_current_user)):
+async def download_plagiarism_report(scan_id: str, user: dict = Depends(get_download_user)):
+    # The download token is bound to the owning document and expires quickly.
     try:
         filename, content = service.download_report(scan_id, user)
     except ScanError as exc:

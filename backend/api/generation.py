@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,9 +18,9 @@ from backend.generator.docx_generator import DOCXGenerator
 from backend.generator.package_generator import SubmissionPackageGenerator
 from backend.generator.pdf_generator import PDFGenerator
 from backend.journal.rules import get_journal_rules
-from backend.security import get_current_user, get_owned_document
+from backend.security import create_download_token, get_current_user, get_download_user, get_owned_document
 
-router = APIRouter(prefix="/api/documents", dependencies=[Depends(get_current_user)])
+router = APIRouter(prefix="/api/documents")
 
 
 def _persist_journal(document_id: str, journal_id: str) -> None:
@@ -181,14 +183,45 @@ async def generate_document(
                 "INSERT OR REPLACE INTO generated_documents(id, document_id, format, path) VALUES (?, ?, ?, ?)",
                 (f"{document_id}-{file_format}", document_id, file_format, str(file_path)),
             )
+        version_number = conn.execute(
+            "SELECT COALESCE(MAX(version_number), 0) + 1 FROM document_versions WHERE document_id = ?",
+            (document_id,),
+        ).fetchone()[0]
+
+    version_dir = output_dir / "versions" / f"version_{version_number:04d}"
+    version_dir.mkdir(parents=True, exist_ok=True)
+    version_files = {
+        "final_manuscript.docx": docx_path,
+        "final_manuscript.pdf": pdf_path,
+        "readiness_report.pdf": readiness_pdf,
+        "submission_package.zip": Path(package["zip_path"]),
+    }
+    for filename, source in version_files.items():
+        shutil.copy2(source, version_dir / filename)
+    version_id = f"{document_id}-v{version_number}-{uuid.uuid4().hex[:8]}"
+    with connection() as conn:
+        conn.execute(
+            "INSERT INTO document_versions(id, document_id, user_id, version_number, journal_id, artifacts_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                version_id,
+                document_id,
+                user["id"],
+                version_number,
+                journal_id,
+                json.dumps({name: str(version_dir / name) for name in version_files}),
+            ),
+        )
     return {
         "document_id": document_id,
+        "version": {"id": version_id, "version_number": version_number},
         "journal_id": journal_id,
         "docx_path": str(docx_path),
         "pdf_path": str(pdf_path),
         "submission_package": package,
         "readiness": readiness,
         "formatting_warnings": formatting_result.warnings,
+        "formatting_warning_details": formatting_result.warning_details,
         "approved_changes": {
             "applied": applied_changes,
             "skipped": skipped_changes,
@@ -201,8 +234,26 @@ async def generate_document(
     }
 
 
+@router.get("/{document_id}/download-token/{file_format}")
+async def create_download_token_for_document(
+    document_id: str,
+    file_format: str,
+    user: dict = Depends(get_current_user),
+):
+    get_owned_document(document_id, user["id"])
+    # Only allow the known file formats that are actually exported.
+    if file_format not in {"docx", "pdf", "report", "zip"}:
+        raise HTTPException(status_code=400, detail="Unsupported download format.")
+    token = create_download_token(user["id"], document_id, scope=file_format)
+    return {
+        "token": token,
+        "expires_in_seconds": 300,
+        "download_url": f"/api/documents/{document_id}/download/{file_format}?token={token}",
+    }
+
+
 @router.get("/{document_id}/download/docx")
-async def download_docx(document_id: str, user: dict = Depends(get_current_user)):
+async def download_docx(document_id: str, user: dict = Depends(get_download_user)):
     get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "final_manuscript.docx"
     if not target.exists():
@@ -211,7 +262,7 @@ async def download_docx(document_id: str, user: dict = Depends(get_current_user)
 
 
 @router.get("/{document_id}/download/pdf")
-async def download_pdf(document_id: str, user: dict = Depends(get_current_user)):
+async def download_pdf(document_id: str, user: dict = Depends(get_download_user)):
     get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "final_manuscript.pdf"
     if not target.exists():
@@ -220,7 +271,7 @@ async def download_pdf(document_id: str, user: dict = Depends(get_current_user))
 
 
 @router.get("/{document_id}/download/report")
-async def download_report(document_id: str, user: dict = Depends(get_current_user)):
+async def download_report(document_id: str, user: dict = Depends(get_download_user)):
     get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "readiness_report.pdf"
     if not target.exists():
@@ -229,7 +280,7 @@ async def download_report(document_id: str, user: dict = Depends(get_current_use
 
 
 @router.get("/{document_id}/download/zip")
-async def download_zip(document_id: str, user: dict = Depends(get_current_user)):
+async def download_zip(document_id: str, user: dict = Depends(get_download_user)):
     get_owned_document(document_id, user["id"])
     target = OUTPUT_DIR / document_id / "submission_package.zip"
     if not target.exists():
