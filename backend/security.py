@@ -12,6 +12,16 @@ from backend.database import connection, fetch_one
 SESSION_LIFETIME = timedelta(days=7)
 bearer_scheme = HTTPBearer(auto_error=False)
 
+# Document-scoped roles and the capabilities granted by each role.
+DOCUMENT_ROLES = {"owner", "editor", "reviewer", "viewer"}
+ROLE_CAPABILITIES = {
+    "owner": {"read", "comment", "review", "edit", "manage_collaborators", "generate", "convert", "manage_versions"},
+    "admin": {"read", "comment", "review", "edit", "manage_collaborators", "generate", "convert", "manage_versions"},
+    "editor": {"read", "comment", "review", "edit", "generate", "convert", "manage_versions"},
+    "reviewer": {"read", "comment", "review"},
+    "viewer": {"read"},
+}
+
 
 def hash_password(password: str, salt: bytes | None = None) -> tuple[str, str]:
     salt = salt or secrets.token_bytes(16)
@@ -37,7 +47,12 @@ def create_session(user_id: str) -> str:
 
 
 def public_user(row) -> dict[str, str]:
-    return {"id": row["id"], "name": row["name"], "email": row["email"]}
+    user = {"id": row["id"], "name": row["name"], "email": row["email"]}
+    try:
+        user["role"] = row["role"] or "author"
+    except (IndexError, KeyError):
+        user["role"] = "author"
+    return user
 
 
 def get_current_user(
@@ -51,7 +66,7 @@ def get_current_user(
         )
     token_hash = hashlib.sha256(credentials.credentials.encode()).hexdigest()
     row = fetch_one(
-        "SELECT users.id, users.name, users.email FROM auth_sessions "
+        "SELECT users.id, users.name, users.email, users.role FROM auth_sessions "
         "JOIN users ON users.id = auth_sessions.user_id "
         "WHERE auth_sessions.token_hash = ? AND auth_sessions.expires_at > ?",
         (token_hash, int(datetime.now(timezone.utc).timestamp())),
@@ -73,3 +88,42 @@ def get_owned_document(document_id: str, user_id: str):
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found.")
     return document
+
+
+def collaborator_role(document_id: str, user_id: str) -> str | None:
+    row = fetch_one(
+        "SELECT role FROM document_collaborators "
+        "WHERE document_id = ? AND user_id = ? AND status = 'accepted'",
+        (document_id, user_id),
+    )
+    return row["role"] if row else None
+
+
+def resolve_document_role(document, user: dict) -> str | None:
+    if document is None:
+        return None
+    if document["user_id"] == user.get("id"):
+        return "owner"
+    if (user.get("role") or "").lower() == "admin":
+        return "admin"
+    return collaborator_role(document["id"], user.get("id") or "")
+
+
+def has_capability(role: str | None, capability: str) -> bool:
+    return bool(role) and capability in ROLE_CAPABILITIES.get(role, set())
+
+
+def require_capability(role: str | None, capability: str) -> None:
+    if not has_capability(role, capability):
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action.")
+
+
+def get_accessible_document(document_id: str, user: dict, *, capability: str = "read"):
+    document = fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
+    role = resolve_document_role(document, user)
+    if role is None:
+        # Return 404 rather than 403 so document existence is not disclosed.
+        raise HTTPException(status_code=404, detail="Document not found.")
+    if not has_capability(role, capability):
+        raise HTTPException(status_code=403, detail="You do not have permission to access this document action.")
+    return document, role

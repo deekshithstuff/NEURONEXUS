@@ -18,7 +18,8 @@ from backend.ai_service import (
     generate_journal_match,
     generate_readiness_report,
 )
-from backend.security import get_current_user, get_owned_document
+from backend.improvement import service as improvement_service
+from backend.security import get_current_user, get_accessible_document
 
 router = APIRouter(prefix="/api", dependencies=[Depends(get_current_user)])
 
@@ -30,11 +31,12 @@ class AnalysisPayload(BaseModel):
     quality_analysis: dict | None = None
     selected_journal: str | None = None
     focus: str | None = None
+    targets: list[dict] | None = None
 
 
-def _document_analysis(payload: AnalysisPayload, user_id: str) -> dict:
-    row = get_owned_document(payload.document_id, user_id)
-    return payload.analysis or (json.loads(row["analysis_json"]) if row["analysis_json"] else {})
+def _document_analysis(payload: AnalysisPayload, user: dict) -> dict:
+    document, _ = get_accessible_document(payload.document_id, user, capability="read")
+    return payload.analysis or (json.loads(document["analysis_json"]) if document["analysis_json"] else {})
 
 
 async def _store_module_result(module: str, payload: AnalysisPayload, baseline: dict, analysis: dict) -> dict:
@@ -52,7 +54,7 @@ async def get_ai_status():
 async def quality_analyze(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     try:
         result = analyze_quality(payload.document_id, analysis, payload.journal_id)
     except ValueError as exc:
@@ -64,7 +66,7 @@ async def quality_analyze(payload: AnalysisPayload, user: dict = Depends(get_cur
 async def novelty_analyze(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     result = analyze_novelty(payload.document_id, analysis)
     return await _store_module_result("novelty", payload, result, analysis)
 
@@ -73,7 +75,7 @@ async def novelty_analyze(payload: AnalysisPayload, user: dict = Depends(get_cur
 async def methodology_analyze(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     result = analyze_methodology(payload.document_id, analysis)
     return await _store_module_result("methodology", payload, result, analysis)
 
@@ -82,7 +84,7 @@ async def methodology_analyze(payload: AnalysisPayload, user: dict = Depends(get
 async def contribution_analyze(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     result = analyze_contribution(payload.document_id, analysis)
     return await _store_module_result("contribution", payload, result, analysis)
 
@@ -91,7 +93,7 @@ async def contribution_analyze(payload: AnalysisPayload, user: dict = Depends(ge
 async def completeness_analyze(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     try:
         result = analyze_completeness(payload.document_id, analysis, payload.journal_id)
     except ValueError as exc:
@@ -103,7 +105,7 @@ async def completeness_analyze(payload: AnalysisPayload, user: dict = Depends(ge
 async def writing_analyze(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     result = analyze_writing(payload.document_id, analysis)
     return await _store_module_result("writing", payload, result, analysis)
 
@@ -112,7 +114,7 @@ async def writing_analyze(payload: AnalysisPayload, user: dict = Depends(get_cur
 async def improvement_generate(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     try:
         result = generate_improvements(payload.document_id, analysis, payload.focus, payload.journal_id)
     except ValueError as exc:
@@ -120,11 +122,37 @@ async def improvement_generate(payload: AnalysisPayload, user: dict = Depends(ge
     return await _store_module_result("improvement", payload, result, analysis)
 
 
+@router.post("/improvement/assess")
+async def improvement_assess(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
+    if not payload.document_id:
+        raise HTTPException(status_code=400, detail="Document ID is required.")
+    analysis = _document_analysis(payload, user)
+    result = improvement_service.assess_manuscript(payload.document_id, analysis, payload.journal_id)
+    save_analysis_result(payload.document_id, "improvement", result)
+    return result
+
+
+@router.post("/improvement/revise")
+async def improvement_revise(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
+    if not payload.document_id:
+        raise HTTPException(status_code=400, detail="Document ID is required.")
+    analysis = _document_analysis(payload, user)
+    return improvement_service.generate_revisions(payload.document_id, analysis, payload.targets)
+
+
+@router.post("/improvement/experiments")
+async def improvement_experiments(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
+    if not payload.document_id:
+        raise HTTPException(status_code=400, detail="Document ID is required.")
+    analysis = _document_analysis(payload, user)
+    return improvement_service.recommend_experiments(payload.document_id, analysis)
+
+
 @router.post("/journal/match")
 async def journal_match(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    get_owned_document(payload.document_id, user["id"])
+    get_accessible_document(payload.document_id, user, capability="read")
     try:
         return generate_journal_match(payload.document_id, payload.analysis, payload.journal_id)
     except ValueError as exc:
@@ -135,7 +163,7 @@ async def journal_match(payload: AnalysisPayload, user: dict = Depends(get_curre
 async def report_generate(payload: AnalysisPayload, user: dict = Depends(get_current_user)):
     if not payload.document_id:
         raise HTTPException(status_code=400, detail="Document ID is required.")
-    analysis = _document_analysis(payload, user["id"])
+    analysis = _document_analysis(payload, user)
     try:
         result = generate_readiness_report(
             payload.document_id,

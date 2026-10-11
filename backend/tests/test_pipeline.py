@@ -210,6 +210,59 @@ def test_upload_and_analyze_text_pdf(tmp_path):
     assert any("source was a PDF" in warning for warning in generated.json()["formatting_warnings"])
 
 
+def test_analyze_text_pdf_tolerates_null_and_control_bytes(tmp_path):
+    pdf_path = tmp_path / "control_chars.pdf"
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_textbox(
+        fitz.Rect(48, 48, 540, 760),
+        "Title with \x00null and \x01control bytes\n\n"
+        "Introduction\n"
+        "Body text with a stray \x00 null byte and a \x0b vertical tab.",
+        fontsize=11,
+        lineheight=1.4,
+    )
+    pdf.save(pdf_path)
+    pdf.close()
+
+    with pdf_path.open("rb") as file_handle:
+        upload = client.post(
+            "/api/documents/upload",
+            files={"file": ("control_chars.pdf", file_handle, "application/pdf")},
+        )
+    assert upload.status_code == 200, upload.text
+
+    analysis = client.post(
+        f"/api/documents/{upload.json()['document_id']}/analyze",
+        json={"journal_id": "nature"},
+    )
+    assert analysis.status_code == 200, analysis.text
+    body = analysis.json()
+    assert body["paragraphs"]
+    assert all("\x00" not in paragraph and "\x0b" not in paragraph for paragraph in body["paragraphs"])
+
+
+def test_docx_generator_strips_control_characters(tmp_path):
+    output_path = tmp_path / "sanitized.docx"
+    DOCXGenerator().generate(
+        {
+            "title": "Title\x00 with null",
+            "authors": ["Author\x01 One"],
+            "keywords": ["key\x00word"],
+            "sections": [{"heading": "Intro\x00duction", "content": "Body\x00 text", "level": 1}],
+            "references": [{"id": "1", "raw_text": "[1] Ref\x00erence"}],
+        },
+        output_path,
+        {"page_size": "A4", "font": "Arial", "font_size": 10},
+    )
+
+    generated = Document(output_path)
+    text = "\n".join(paragraph.text for paragraph in generated.paragraphs)
+    assert "\x00" not in text and "\x01" not in text
+    assert "Title with null" in text
+    assert "Body text" in text
+
+
 def test_scanned_pdf_without_text_reports_ocr_limitation(tmp_path):
     pdf_path = tmp_path / "scanned.pdf"
     pdf = fitz.open()

@@ -23,11 +23,18 @@ import {
   Sparkles,
   Sun,
   UploadCloud,
+  Users,
   X,
   Zap,
 } from 'lucide-react'
 import AuthScreen from './AuthScreen'
 import PlagiarismPage from './PlagiarismPage'
+import {
+  AnalyticsPage,
+  CompliancePage,
+  CollaborationPage,
+  ConversionPage,
+} from './FeaturePages'
 import { researchApi } from './services/api'
 
 const navigation = [
@@ -45,6 +52,10 @@ const navigation = [
   { label: 'Improvements', icon: Zap, id: 'improvements' },
   { label: 'Report', icon: ShieldCheck, id: 'report' },
   { label: 'Formatting', icon: FileText, id: 'formatting' },
+  { label: 'Compliance', icon: ShieldCheck, id: 'compliance' },
+  { label: 'Conversion', icon: FileText, id: 'conversion' },
+  { label: 'Collaborate', icon: Users, id: 'collaboration' },
+  { label: 'Analytics', icon: BarChart3, id: 'analytics' },
   { label: 'Export', icon: FolderOpen, id: 'export' },
 ]
 
@@ -460,6 +471,10 @@ function ResearchWorkspace({ user, onSignOut }) {
           )}
           {active === 'report' && <ReportPage report={report} setActive={setActive} />}
           {active === 'formatting' && <FormattingPage document={document} selectedJournalId={selectedJournalId} selectedJournal={selectedJournal} setActive={setActive} />}
+          {active === 'compliance' && <CompliancePage document={document} setActive={setActive} />}
+          {active === 'conversion' && <ConversionPage document={document} setActive={setActive} />}
+          {active === 'collaboration' && <CollaborationPage document={document} setActive={setActive} />}
+          {active === 'analytics' && <AnalyticsPage document={document} setActive={setActive} />}
           {active === 'export' && (
             <ExportPage
               document={document}

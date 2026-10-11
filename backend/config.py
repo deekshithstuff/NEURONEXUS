@@ -1,4 +1,9 @@
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -7,6 +12,13 @@ OUTPUT_DIR = BASE_DIR / "outputs"
 DATABASE_PATH = DATA_DIR / "neuronexus.sqlite3"
 MAX_UPLOAD_BYTES = 15 * 1024 * 1024
 ALLOWED_EXTENSIONS = {".docx", ".pdf"}
+
+# Comma-separated emails that are granted the platform administrator role.
+ADMIN_EMAILS = {
+    email.strip().lower()
+    for email in os.getenv("PAPERPILOT_ADMIN_EMAILS", "").split(",")
+    if email.strip()
+}
 
 for directory in (DATA_DIR, UPLOAD_DIR, OUTPUT_DIR):
     directory.mkdir(parents=True, exist_ok=True)

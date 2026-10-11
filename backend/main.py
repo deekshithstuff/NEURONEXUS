@@ -6,9 +6,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.ai import router as ai_router
+from backend.api.analytics import router as analytics_router
 from backend.api.auth import router as auth_router
 from backend.api.documents import router as documents_router
 from backend.api.citations import router as citations_router
+from backend.api.collaboration import router as collaboration_router
+from backend.api.compliance import router as compliance_router
+from backend.api.conversion import router as conversion_router
 from backend.api.generation import router as generation_router
 from backend.api.journals import router as journals_router
 from backend.api.plagiarism import router as plagiarism_router
@@ -38,6 +42,10 @@ app.include_router(journals_router)
 app.include_router(ai_router)
 app.include_router(plagiarism_router)
 app.include_router(generation_router)
+app.include_router(compliance_router)
+app.include_router(conversion_router)
+app.include_router(collaboration_router)
+app.include_router(analytics_router)
 
 
 @app.get("/health")

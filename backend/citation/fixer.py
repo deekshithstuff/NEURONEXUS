@@ -8,6 +8,7 @@ from docx import Document
 
 from backend.citation.reference_parser import normalize_doi
 from backend.citation.validator import validate_citations, _citation_reference_ids, _reference_key
+from backend.text_utils import sanitize_xml_text
 
 
 def suggest_citation_fixes(citations: list[dict], references: list[dict], citation_style: str | None = None) -> dict:
@@ -111,7 +112,7 @@ def write_working_docx(source_path: str | Path, destination: str | Path, analysi
         if old and new and old != new:
             replacements[str(old)] = str(new)
     bibliography = {
-        str(reference.get("id")): str(reference.get("raw_text") or "")
+        str(reference.get("id")): sanitize_xml_text(reference.get("raw_text") or "")
         for reference in analysis.get("references") or []
     }
     in_references = False
@@ -127,6 +128,7 @@ def write_working_docx(source_path: str | Path, destination: str | Path, analysi
             match = re.match(r"\[?(\d+)\]?", text.strip())
             if match and match.group(1) in bibliography:
                 updated = bibliography[match.group(1)]
+        updated = sanitize_xml_text(updated)
         if updated != text and paragraph.runs:
             paragraph.runs[0].text = updated
             for run in paragraph.runs[1:]:

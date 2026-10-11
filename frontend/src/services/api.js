@@ -71,4 +71,50 @@ export const researchApi = {
   formatDocument: (id, payload) => request(`/api/documents/${id}/format`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   generateDocument: (id, payload) => request(`/api/documents/${id}/generate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   download: (id, format) => request(`/api/documents/${id}/download/${format}`),
+  getArticleTypes: () => request('/api/compliance/article-types'),
+  getCompliance: (id, params = {}) => {
+    const query = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, value]) => value !== null && value !== undefined && value !== ''))
+    ).toString()
+    return request(`/api/documents/${id}/compliance${query ? `?${query}` : ''}`)
+  },
+  getWordLimit: (id, params = {}) => request(`/api/documents/${id}/compliance/word-limit?${new URLSearchParams(params)}`),
+  getAnalytics: (id, params = {}) => {
+    const query = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, value]) => value !== null && value !== undefined && value !== ''))
+    ).toString()
+    return request(`/api/documents/${id}/analytics${query ? `?${query}` : ''}`)
+  },
+  exportAnalytics: (id, params = {}) => {
+    const query = new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, value]) => value !== null && value !== undefined && value !== ''))
+    ).toString()
+    return request(`/api/documents/${id}/analytics/export${query ? `?${query}` : ''}`, { responseType: 'blob' })
+  },
+  getConversions: (id) => request(`/api/documents/${id}/conversions`),
+  startConversion: (id, payload) => request(`/api/documents/${id}/conversions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  getConversionJob: (jobId) => request(`/api/conversions/${jobId}`),
+  downloadConversion: (jobId, format) => request(`/api/conversions/${jobId}/download/${format}`, { responseType: 'blob' }),
+  getCollaborators: (id) => request(`/api/documents/${id}/collaborators`),
+  inviteCollaborator: (id, payload) => request(`/api/documents/${id}/collaborators`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  updateCollaborator: (id, collaboratorId, payload) => request(`/api/documents/${id}/collaborators/${collaboratorId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  removeCollaborator: (id, collaboratorId) => request(`/api/documents/${id}/collaborators/${collaboratorId}`, { method: 'DELETE' }),
+  getInvitations: () => request('/api/collaboration/invitations'),
+  acceptInvitation: (collaboratorId) => request(`/api/collaboration/invitations/${collaboratorId}/accept`, { method: 'POST' }),
+  getSharedDocuments: () => request('/api/collaboration/shared'),
+  getComments: (id, params = {}) => request(`/api/documents/${id}/comments?${new URLSearchParams(params)}`),
+  addComment: (id, payload) => request(`/api/documents/${id}/comments`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  resolveComment: (id, commentId, payload = {}) => request(`/api/documents/${id}/comments/${commentId}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  getReviews: (id) => request(`/api/documents/${id}/reviews`),
+  submitReview: (id, payload) => request(`/api/documents/${id}/reviews`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  getVersions: (id) => request(`/api/documents/${id}/versions`),
+  createVersion: (id, payload = {}) => request(`/api/documents/${id}/versions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  diffVersions: (id, fromVersion, toVersion) => request(`/api/documents/${id}/versions/diff?from=${encodeURIComponent(fromVersion)}&to=${encodeURIComponent(toVersion)}`),
+  getVersion: (id, versionId) => request(`/api/documents/${id}/versions/${versionId}`),
+  restoreVersion: (id, versionId, payload = {}) => request(`/api/documents/${id}/versions/${versionId}/restore`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  getNotifications: (unreadOnly = false) => request(`/api/collaboration/notifications?unread_only=${unreadOnly}`),
+  markNotificationsRead: (payload = {}) => request('/api/collaboration/notifications/read', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  assessImprovement: (payload) => request('/api/improvement/assess', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  reviseImprovement: (payload) => request('/api/improvement/revise', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
+  suggestExperiments: (payload) => request('/api/improvement/experiments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
 }

@@ -15,7 +15,7 @@ from backend.config import ALLOWED_EXTENSIONS, MAX_UPLOAD_BYTES, UPLOAD_DIR
 from backend.database import connection, fetch_all, fetch_one, save_json_rows
 from backend.document.parser import DocumentParser
 from backend.journal.matcher import match_journal
-from backend.security import get_current_user, get_owned_document
+from backend.security import get_current_user, get_accessible_document
 
 
 def generate_document_id() -> str:
@@ -139,7 +139,7 @@ async def dashboard_summary(user: dict = Depends(get_current_user)):
 
 @router.get("/{document_id}")
 async def get_document(document_id: str, user: dict = Depends(get_current_user)):
-    row = get_owned_document(document_id, user["id"])
+    row, _ = get_accessible_document(document_id, user, capability="read")
     return {"document_id": row["id"], "filename": row["filename"], "status": row["status"], "analysis": json.loads(row["analysis_json"]) if row["analysis_json"] else None}
 
 
@@ -149,7 +149,7 @@ async def analyze_document(
     request: AnalysisRequest,
     user: dict = Depends(get_current_user),
 ):
-    row = get_owned_document(document_id, user["id"])
+    row, _ = get_accessible_document(document_id, user, capability="generate")
     parser = DocumentParser()
     try:
         source_path = Path(row["original_path"])
@@ -175,10 +175,7 @@ async def analyze_document(
 
 @router.get("/{document_id}/structure")
 async def get_document_structure(document_id: str, user: dict = Depends(get_current_user)):
-    row = fetch_one(
-        "SELECT * FROM documents WHERE id = ? AND user_id = ?",
-        (document_id, user["id"]),
-    )
+    row, _ = get_accessible_document(document_id, user, capability="read")
     if not row or not row["analysis_json"]:
         raise HTTPException(status_code=404, detail="Document structure is not available yet.")
     return json.loads(row["analysis_json"])
@@ -190,11 +187,7 @@ async def get_saved_analysis(
     module: str,
     user: dict = Depends(get_current_user),
 ):
-    if not fetch_one(
-        "SELECT 1 FROM documents WHERE id = ? AND user_id = ?",
-        (document_id, user["id"]),
-    ):
-        raise HTTPException(status_code=404, detail="Document not found.")
+    get_accessible_document(document_id, user, capability="read")
     result = fetch_one(
         "SELECT payload_json, updated_at FROM analysis_results WHERE document_id = ? AND module = ?",
         (document_id, module),

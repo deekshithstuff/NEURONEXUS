@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 
+from backend.config import ADMIN_EMAILS
 from backend.database import connection, fetch_one
 from backend.security import (
     bearer_scheme,
@@ -64,18 +65,19 @@ async def register(request: Registration):
         raise HTTPException(status_code=422, detail="Enter your name.")
     password_hash, password_salt = hash_password(request.password)
     user_id = str(uuid.uuid4())
+    role = "admin" if email in ADMIN_EMAILS else "author"
     try:
         with connection() as conn:
             conn.execute(
-                "INSERT INTO users (id, name, email, password_hash, password_salt) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (user_id, name, email, password_hash, password_salt),
+                "INSERT INTO users (id, name, email, password_hash, password_salt, role) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, name, email, password_hash, password_salt, role),
             )
     except sqlite3.IntegrityError as exc:
         if "users.email" in str(exc):
             raise HTTPException(status_code=409, detail="An account with this email already exists.") from exc
         raise
-    user = fetch_one("SELECT id, name, email FROM users WHERE id = ?", (user_id,))
+    user = fetch_one("SELECT id, name, email, role FROM users WHERE id = ?", (user_id,))
     return _session_response(user)
 
 
@@ -83,7 +85,7 @@ async def register(request: Registration):
 async def login(request: Credentials):
     email = _normalize_email(request.email)
     user = fetch_one(
-        "SELECT id, name, email, password_hash, password_salt FROM users WHERE email = ?",
+        "SELECT id, name, email, role, password_hash, password_salt FROM users WHERE email = ?",
         (email,),
     )
     if user is None or not user["password_hash"] or not user["password_salt"]:
@@ -122,7 +124,7 @@ async def google_login(request: GoogleCredential):
 
     email = _normalize_email(claims["email"])
     user = fetch_one(
-        "SELECT id, name, email, google_sub FROM users WHERE google_sub = ? OR email = ?",
+        "SELECT id, name, email, role, google_sub FROM users WHERE google_sub = ? OR email = ?",
         (claims["sub"], email),
     )
     if user:
@@ -133,7 +135,7 @@ async def google_login(request: GoogleCredential):
                 "UPDATE users SET google_sub = ? WHERE id = ?",
                 (claims["sub"], user["id"]),
             )
-        user = fetch_one("SELECT id, name, email FROM users WHERE id = ?", (user["id"],))
+        user = fetch_one("SELECT id, name, email, role FROM users WHERE id = ?", (user["id"],))
     else:
         user_id = str(uuid.uuid4())
         name = (claims.get("name") or email.split("@", 1)[0]).strip()[:80] or email
@@ -142,7 +144,7 @@ async def google_login(request: GoogleCredential):
                 "INSERT INTO users (id, name, email, google_sub) VALUES (?, ?, ?, ?)",
                 (user_id, name, email, claims["sub"]),
             )
-        user = fetch_one("SELECT id, name, email FROM users WHERE id = ?", (user_id,))
+        user = fetch_one("SELECT id, name, email, role FROM users WHERE id = ?", (user_id,))
     return _session_response(user)
 
 

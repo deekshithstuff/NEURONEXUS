@@ -7,6 +7,17 @@ from backend.database import connection
 
 RULES_PATH = Path(__file__).with_name("profiles.json")
 
+DEFAULT_GUIDELINE = {
+    "source_name": None,
+    "source_url": None,
+    "verification_status": "unverified",
+    "last_checked": None,
+    "notes": (
+        "Rules reflect a generic publisher profile and have not been verified against the "
+        "journal's current official author guidelines. Treat them as guidance only."
+    ),
+}
+
 
 def _merge(base: dict, overrides: dict) -> dict:
     result = deepcopy(base)
@@ -44,6 +55,16 @@ def load_journal_rules() -> list[dict]:
         resolved.setdefault("body_font", resolved.get("font"))
         resolved.setdefault("body_font_size", resolved.get("font_size"))
         resolved.setdefault("in_text_citation_style", resolved.get("citation_style"))
+        resolved.setdefault("required_declarations", [])
+        resolved.setdefault("anonymity_required", False)
+        resolved.setdefault("article_types", ["original_research"])
+        guideline = dict(DEFAULT_GUIDELINE)
+        explicit = resolved.get("guideline")
+        if isinstance(explicit, dict):
+            guideline.update(explicit)
+        if resolved.get("profile_basis"):
+            guideline.setdefault("notes", resolved["profile_basis"])
+        resolved["guideline"] = guideline
         resolved.pop("extends", None)
         profiles.append(resolved)
     return profiles

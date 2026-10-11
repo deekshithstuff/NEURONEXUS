@@ -7,6 +7,7 @@ from docx import Document
 from docx.oxml.ns import qn
 
 from backend.citation.reference_parser import parse_reference_line
+from backend.text_utils import sanitize_xml_text
 
 from .models import Citation, DocumentAnalysis, Equation, Figure, Reference, Section, TableData
 
@@ -78,12 +79,12 @@ class DocumentParser:
         except (fitz.FileDataError, fitz.EmptyFileError, OSError) as exc:
             raise ValueError("The uploaded file is not a readable PDF document.") from exc
 
-        paragraphs = [
-            re.sub(r"\s+", " ", line).strip()
-            for block in page_blocks
-            for line in block.splitlines()
-            if line.strip()
-        ]
+        paragraphs: list[str] = []
+        for block in page_blocks:
+            for line in block.splitlines():
+                cleaned = sanitize_xml_text(re.sub(r"\s+", " ", line)).strip()
+                if cleaned:
+                    paragraphs.append(cleaned)
         if not paragraphs:
             raise ValueError("This PDF has no extractable text. Scanned PDFs require OCR and are not supported yet.")
 

@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from docx import Document
 from starlette.responses import FileResponse
 
 from backend.ai_service import apply_approved_changes, generate_readiness_report
 from backend.config import OUTPUT_DIR
 from backend.database import connection
 from backend.formatting.formatter import apply_formatting
+from backend.generator.apply_changes import apply_changes_to_source
 from backend.generator.docx_generator import DOCXGenerator
 from backend.generator.package_generator import SubmissionPackageGenerator
 from backend.generator.pdf_generator import PDFGenerator
 from backend.journal.rules import get_journal_rules
-from backend.security import get_current_user, get_owned_document
+from backend.security import get_current_user, get_accessible_document
 
 router = APIRouter(prefix="/api/documents", dependencies=[Depends(get_current_user)])
 
@@ -29,43 +28,13 @@ def _persist_journal(document_id: str, journal_id: str) -> None:
         )
 
 
-def _apply_approved_changes_to_source(source_path: Path, output_path: Path, applied_changes: list[dict]) -> Path:
-    """Rewrite a DOCX source in place so accepted improvements land in the final document."""
-    doc = Document(source_path)
-    for change in applied_changes:
-        original = change.get("original") or ""
-        suggested = change.get("suggested") or ""
-        if not original or not suggested:
-            continue
-        pattern = re.compile(
-            r"\s+".join(re.escape(part) for part in original.split() if part),
-            flags=re.IGNORECASE,
-        )
-        for paragraph in doc.paragraphs:
-            match = pattern.search(paragraph.text)
-            if not match:
-                continue
-            for run in paragraph.runs:
-                if run.text and run.text.strip() and pattern.search(run.text):
-                    run.text = pattern.sub(suggested, run.text, count=1)
-                    match = None
-                    break
-            if match is not None:
-                start, end = match.span()
-                paragraph.runs[0].text = paragraph.text[:start] + suggested + paragraph.text[end:]
-                for extra_run in paragraph.runs[1:]:
-                    extra_run.text = ""
-    doc.save(output_path)
-    return output_path
-
-
 @router.post("/{document_id}/format")
 async def format_document(
     document_id: str,
     payload: dict | None = None,
     user: dict = Depends(get_current_user),
 ):
-    document = get_owned_document(document_id, user["id"])
+    document, _ = get_accessible_document(document_id, user, capability="generate")
     if not document["analysis_json"]:
         raise HTTPException(status_code=404, detail="Document not found or not analyzed.")
     analysis = json.loads(document["analysis_json"])
@@ -90,7 +59,7 @@ async def generate_document(
     payload: dict | None = None,
     user: dict = Depends(get_current_user),
 ):
-    document = get_owned_document(document_id, user["id"])
+    document, _ = get_accessible_document(document_id, user, capability="generate")
     if not document["analysis_json"]:
         raise HTTPException(status_code=404, detail="Document not found or not analyzed.")
     analysis = json.loads(document["analysis_json"])
@@ -116,7 +85,7 @@ async def generate_document(
     source_is_pdf = source_path.suffix.lower() == ".pdf"
     source_for_generation = None if source_is_pdf else source_path
     if not source_is_pdf and applied_changes:
-        source_for_generation = _apply_approved_changes_to_source(
+        source_for_generation = apply_changes_to_source(
             source_path, output_dir / "source_accepted.docx", applied_changes
         )
     DOCXGenerator().generate(
@@ -203,7 +172,7 @@ async def generate_document(
 
 @router.get("/{document_id}/download/docx")
 async def download_docx(document_id: str, user: dict = Depends(get_current_user)):
-    get_owned_document(document_id, user["id"])
+    get_accessible_document(document_id, user, capability="read")
     target = OUTPUT_DIR / document_id / "final_manuscript.docx"
     if not target.exists():
         raise HTTPException(status_code=404, detail="DOCX output not yet generated.")
@@ -212,7 +181,7 @@ async def download_docx(document_id: str, user: dict = Depends(get_current_user)
 
 @router.get("/{document_id}/download/pdf")
 async def download_pdf(document_id: str, user: dict = Depends(get_current_user)):
-    get_owned_document(document_id, user["id"])
+    get_accessible_document(document_id, user, capability="read")
     target = OUTPUT_DIR / document_id / "final_manuscript.pdf"
     if not target.exists():
         raise HTTPException(status_code=404, detail="PDF output not yet generated.")
@@ -221,7 +190,7 @@ async def download_pdf(document_id: str, user: dict = Depends(get_current_user))
 
 @router.get("/{document_id}/download/report")
 async def download_report(document_id: str, user: dict = Depends(get_current_user)):
-    get_owned_document(document_id, user["id"])
+    get_accessible_document(document_id, user, capability="read")
     target = OUTPUT_DIR / document_id / "readiness_report.pdf"
     if not target.exists():
         raise HTTPException(status_code=404, detail="Readiness report not yet generated.")
@@ -230,7 +199,7 @@ async def download_report(document_id: str, user: dict = Depends(get_current_use
 
 @router.get("/{document_id}/download/zip")
 async def download_zip(document_id: str, user: dict = Depends(get_current_user)):
-    get_owned_document(document_id, user["id"])
+    get_accessible_document(document_id, user, capability="read")
     target = OUTPUT_DIR / document_id / "submission_package.zip"
     if not target.exists():
         raise HTTPException(status_code=404, detail="Submission package not yet generated.")

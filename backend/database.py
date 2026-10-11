@@ -59,6 +59,104 @@ CREATE TABLE IF NOT EXISTS plagiarism_scans (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(document_id) REFERENCES documents(id)
 );
+CREATE TABLE IF NOT EXISTS manuscript_versions (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    author_id TEXT,
+    parent_version_id TEXT,
+    label TEXT,
+    change_summary TEXT,
+    analysis_json TEXT,
+    content_hash TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(document_id) REFERENCES documents(id)
+);
+CREATE TABLE IF NOT EXISTS document_collaborators (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    user_id TEXT,
+    email TEXT NOT NULL COLLATE NOCASE,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    status TEXT NOT NULL DEFAULT 'pending',
+    invited_by TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(document_id, email),
+    FOREIGN KEY(document_id) REFERENCES documents(id)
+);
+CREATE TABLE IF NOT EXISTS comments (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    version_id TEXT,
+    parent_id TEXT,
+    author_id TEXT NOT NULL,
+    section_ref TEXT,
+    quote TEXT,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    resolved_by TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(document_id) REFERENCES documents(id)
+);
+CREATE TABLE IF NOT EXISTS review_decisions (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    version_id TEXT,
+    reviewer_id TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    comment TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(document_id) REFERENCES documents(id)
+);
+CREATE TABLE IF NOT EXISTS conversion_jobs (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    journal_id TEXT NOT NULL,
+    article_type TEXT,
+    status TEXT NOT NULL,
+    output_dir TEXT,
+    options_json TEXT,
+    result_json TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(document_id) REFERENCES documents(id)
+);
+CREATE TABLE IF NOT EXISTS conversion_outputs (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    journal_id TEXT NOT NULL,
+    format TEXT NOT NULL,
+    path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(job_id) REFERENCES conversion_jobs(id)
+);
+CREATE TABLE IF NOT EXISTS analysis_snapshots (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    version_id TEXT,
+    module TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(document_id) REFERENCES documents(id)
+);
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    document_id TEXT,
+    kind TEXT NOT NULL,
+    message TEXT NOT NULL,
+    read INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_versions_document ON manuscript_versions(document_id);
+CREATE INDEX IF NOT EXISTS idx_comments_document ON comments(document_id);
+CREATE INDEX IF NOT EXISTS idx_collaborators_document ON document_collaborators(document_id);
+CREATE INDEX IF NOT EXISTS idx_conversion_jobs_document ON conversion_jobs(document_id);
+CREATE INDEX IF NOT EXISTS idx_snapshots_document ON analysis_snapshots(document_id);
 """
 
 @contextmanager
@@ -71,6 +169,12 @@ def connection():
     finally:
         conn.close()
 
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db() -> None:
     Path(DATABASE_PATH).parent.mkdir(parents=True, exist_ok=True)
     with connection() as conn:
@@ -80,6 +184,9 @@ def init_db() -> None:
             conn.execute("ALTER TABLE documents ADD COLUMN user_id TEXT REFERENCES users(id)")
         if "working_path" not in document_columns:
             conn.execute("ALTER TABLE documents ADD COLUMN working_path TEXT")
+        _ensure_column(conn, "users", "role", "TEXT NOT NULL DEFAULT 'author'")
+        _ensure_column(conn, "documents", "current_version_id", "TEXT")
+        _ensure_column(conn, "conversion_jobs", "options_json", "TEXT")
 
 def execute(query: str, params: Iterable[Any] = ()) -> None:
     with connection() as conn:

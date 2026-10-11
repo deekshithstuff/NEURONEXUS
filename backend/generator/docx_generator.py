@@ -8,6 +8,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
+from backend.text_utils import sanitize_xml_text
+
 
 BLACK = RGBColor(0x00, 0x00, 0x00)
 
@@ -62,7 +64,7 @@ class DOCXGenerator:
         section.left_margin = Inches(float(margins.get("left", 1.0)))
         section.right_margin = Inches(float(margins.get("right", 1.0)))
 
-        title = document.get("title") or "Untitled manuscript"
+        title = sanitize_xml_text(document.get("title") or "Untitled manuscript")
         title_para = doc.add_paragraph()
         title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         title_run = title_para.add_run(title)
@@ -72,24 +74,24 @@ class DOCXGenerator:
         if authors:
             author_para = doc.add_paragraph()
             author_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            author_run = author_para.add_run(", ".join(authors))
+            author_run = author_para.add_run(", ".join(sanitize_xml_text(author) for author in authors))
             _set_run_font(author_run, font_name, font_size)
 
         keywords = document.get("keywords") or []
         if keywords:
             keyword_para = doc.add_paragraph()
-            keyword_run = keyword_para.add_run("Keywords: " + ", ".join(str(item) for item in keywords))
+            keyword_run = keyword_para.add_run("Keywords: " + ", ".join(sanitize_xml_text(item) for item in keywords))
             _set_run_font(keyword_run, font_name, font_size, bold=False)
             self._apply_spacing(keyword_para, line_spacing, paragraph_spacing)
 
         for manuscript_section in document.get("sections", []):
-            heading = manuscript_section.get("heading")
+            heading = sanitize_xml_text(manuscript_section.get("heading"))
             if heading:
                 heading_para = doc.add_heading(heading, level=min(int(manuscript_section.get("level") or 1), 4))
                 heading_para.style.font.color.rgb = BLACK
                 for run in heading_para.runs:
                     _set_run_font(run, font_name, font_size + 2, bold=True, black=True)
-            content = manuscript_section.get("content")
+            content = sanitize_xml_text(manuscript_section.get("content"))
             if content:
                 body = doc.add_paragraph(content)
                 self._apply_spacing(body, line_spacing, paragraph_spacing)
@@ -97,14 +99,14 @@ class DOCXGenerator:
                     _set_run_font(run, font_name, font_size)
 
         for index, figure in enumerate(document.get("figures") or [], start=1):
-            caption = figure.get("caption") or figure.get("id") or f"Figure {index}"
+            caption = sanitize_xml_text(figure.get("caption") or figure.get("id") or f"Figure {index}")
             para = doc.add_paragraph(f"Figure {index}. {caption}")
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for run in para.runs:
                 _set_run_font(run, font_name, max(font_size - 1, 8))
 
         for index, table in enumerate(document.get("tables") or [], start=1):
-            caption = table.get("caption") or table.get("id") or f"Table {index}"
+            caption = sanitize_xml_text(table.get("caption") or table.get("id") or f"Table {index}")
             para = doc.add_paragraph(f"Table {index}. {caption}")
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for run in para.runs:
@@ -114,10 +116,10 @@ class DOCXGenerator:
                 word_table = doc.add_table(rows=len(rows), cols=len(rows[0]))
                 for r_idx, row in enumerate(rows):
                     for c_idx, cell_value in enumerate(row):
-                        word_table.rows[r_idx].cells[c_idx].text = str(cell_value)
+                        word_table.rows[r_idx].cells[c_idx].text = sanitize_xml_text(cell_value)
 
         for index, equation in enumerate(document.get("equations") or [], start=1):
-            text = equation.get("latex") or equation.get("text") or equation.get("id") or f"Equation {index}"
+            text = sanitize_xml_text(equation.get("latex") or equation.get("text") or equation.get("id") or f"Equation {index}")
             para = doc.add_paragraph(f"({index})  {text}")
             para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             for run in para.runs:
@@ -135,7 +137,7 @@ class DOCXGenerator:
             for run in heading.runs:
                 _set_run_font(run, font_name, font_size + 2, bold=True, black=True)
             for index, reference in enumerate(references, start=1):
-                raw = reference.get("raw_text") or reference.get("text") or ""
+                raw = sanitize_xml_text(reference.get("raw_text") or reference.get("text") or "")
                 raw = LEADING_REFERENCE_NUMBER.sub("", raw.strip(), count=1).strip()
                 ref_id = reference.get("id") or str(index)
                 para = doc.add_paragraph(f"[{ref_id}] {raw}".strip())
