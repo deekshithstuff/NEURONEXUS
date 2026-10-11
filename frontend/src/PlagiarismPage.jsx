@@ -5,9 +5,11 @@ import {
   Download,
   Info,
   Link2,
+  FileUp,
   RefreshCw,
   ScanSearch,
   ShieldAlert,
+  Trash2,
 } from 'lucide-react'
 import { researchApi } from './services/api'
 import {
@@ -20,6 +22,7 @@ import {
 } from './services/plagiarismReport'
 
 const TONE_MARK = { danger: 'warning', warning: 'warning', info: 'neutral', neutral: 'neutral', good: 'good' }
+const SOURCE_HIGHLIGHTS = ['#fff1a8', '#d9ecff', '#e8d9ff', '#d8f1df', '#ffdce5', '#d4f0f0']
 
 function LoadingStatus({ label }) {
   return (
@@ -40,6 +43,10 @@ export default function PlagiarismPage({ document, setActive }) {
   const [scan, setScan] = useState(null)
   const [error, setError] = useState('')
   const [isDownloading, setIsDownloading] = useState(false)
+  const [referenceDocuments, setReferenceDocuments] = useState([])
+  const [isIndexingReference, setIsIndexingReference] = useState(false)
+  const [referenceError, setReferenceError] = useState('')
+  const [matchFilter, setMatchFilter] = useState('all')
   const mounted = useRef(true)
   const activeScanId = useRef(null)
 
@@ -49,6 +56,10 @@ export default function PlagiarismPage({ document, setActive }) {
       .getPlagiarismStatus()
       .then((payload) => setConfig(payload))
       .catch((requestError) => setConfigError(requestError.message || 'Plagiarism configuration is unavailable.'))
+    researchApi
+      .getPlagiarismReferences()
+      .then((payload) => setReferenceDocuments(payload.documents || []))
+      .catch((requestError) => setReferenceError(requestError.message || 'The local reference index is unavailable.'))
     return () => {
       mounted.current = false
     }
@@ -63,6 +74,52 @@ export default function PlagiarismPage({ document, setActive }) {
 
   const externalAvailable = Boolean(config?.external?.configured)
   const availability = engineAvailability(config)
+
+  const refreshReferences = async () => {
+    const [references, status] = await Promise.all([
+      researchApi.getPlagiarismReferences(),
+      researchApi.getPlagiarismStatus(),
+    ])
+    setReferenceDocuments(references.documents || [])
+    setConfig(status)
+  }
+
+  const uploadReference = async (event) => {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setReferenceError('')
+    setIsIndexingReference(true)
+    try {
+      const result = await researchApi.uploadPlagiarismReference(file)
+      await refreshReferences()
+      if (result.status !== 'indexed') setReferenceError(result.error || `Reference status: ${result.status}.`)
+    } catch (requestError) {
+      setReferenceError(requestError.message || 'The PDF could not be indexed.')
+    } finally {
+      setIsIndexingReference(false)
+    }
+  }
+
+  const removeReference = async (referenceId) => {
+    setReferenceError('')
+    try {
+      await researchApi.deletePlagiarismReference(referenceId)
+      await refreshReferences()
+    } catch (requestError) {
+      setReferenceError(requestError.message || 'The reference could not be removed.')
+    }
+  }
+
+  const reindexReference = async (referenceId) => {
+    setReferenceError('')
+    try {
+      await researchApi.reindexPlagiarismReference(referenceId)
+      await refreshReferences()
+    } catch (requestError) {
+      setReferenceError(requestError.message || 'The reference could not be re-indexed.')
+    }
+  }
 
   const pollScan = useCallback(async (scanId) => {
     for (let attempt = 0; attempt < 150; attempt += 1) {
@@ -136,19 +193,11 @@ export default function PlagiarismPage({ document, setActive }) {
     }
   }
 
-  if (!document?.document_id) {
-    return (
-      <section className="status-box">
-        <strong>No manuscript loaded.</strong>
-        <p>Upload a DOCX or PDF manuscript, then run a similarity scan from this tab.</p>
-        <button type="button" className="outline-button" onClick={() => setActive('upload')}>Upload manuscript</button>
-      </section>
-    )
-  }
-
   const report = scan?.report || null
   const stats = report ? summarizeScan(report) : []
   const busy = phase === 'starting' || phase === 'running'
+  const sourceColors = new Map((report?.sources || []).map((source, index) => [source.id, SOURCE_HIGHLIGHTS[index % SOURCE_HIGHLIGHTS.length]]))
+  const visibleMatches = (report?.matches || []).filter((match) => matchFilter === 'all' || match.method === matchFilter)
 
   return (
     <>
@@ -166,6 +215,63 @@ export default function PlagiarismPage({ document, setActive }) {
         </button>
       </section>
 
+      <section className="panel reference-corpus-panel">
+        <div className="panel-heading">
+          <div><p className="kicker">LOCAL REFERENCE CORPUS</p><h2>Manage comparison PDFs</h2></div>
+          <label className="outline-button reference-upload-button">
+            <FileUp size={16} /> {isIndexingReference ? 'Indexing PDF…' : 'Add reference PDF'}
+            <input type="file" accept="application/pdf,.pdf" onChange={uploadReference} disabled={isIndexingReference || busy} />
+          </label>
+        </div>
+        <p className="reference-scope-note">
+          Local comparison uses this account’s indexed PDFs and the configured local corpus; it does not search all scholarly content or the internet.
+          Any external provider is a separate optional scan. Similarity is evidence for review, not proof of plagiarism.
+        </p>
+        <div className="plag-meta">
+          <span><Info size={14} /> {config?.corpus?.source_count ?? '—'} searchable local sources</span>
+          <span><Info size={14} /> {config?.reference_index?.indexed_count ?? 0} account PDFs indexed</span>
+          <span><Info size={14} /> Last index update: {config?.reference_index?.last_indexed_at || 'none yet'}</span>
+          {(config?.reference_index?.failure_count || 0) > 0 && <span>{config.reference_index.failure_count} PDF(s) need review</span>}
+          <span><Info size={14} /> PDF text extraction only; scanned files need OCR</span>
+        </div>
+        {referenceError && <div className="status-box error-box" role="alert">{referenceError}</div>}
+        {referenceDocuments.length === 0 ? (
+          <div className="status-box"><strong>No account PDFs indexed yet.</strong><p>Add reference papers you are permitted to use for comparison.</p></div>
+        ) : (
+          <div className="reference-document-list">
+            {referenceDocuments.map((reference) => (
+              <article className="reference-document" key={reference.id}>
+                <div>
+                  <strong>{reference.title}</strong>
+                  <span>{reference.filename} · {reference.page_count} page(s){reference.year ? ` · ${reference.year}` : ''}</span>
+                  {reference.authors?.length > 0 && <span>{reference.authors.join(', ')}</span>}
+                  <span className={`reference-status ${reference.status}`}>{reference.status.replaceAll('_', ' ')}</span>
+                  {reference.error && <span className="reference-error">{reference.error}</span>}
+                  {reference.duplicate_of && <span>Duplicate of {reference.duplicate_of}</span>}
+                </div>
+                <div className="reference-actions">
+                  {reference.status !== 'indexed' && (
+                    <button type="button" className="outline-button" onClick={() => reindexReference(reference.id)} disabled={busy || isIndexingReference}>Re-index</button>
+                  )}
+                  <button type="button" className="icon-button" aria-label={`Remove ${reference.filename}`} onClick={() => removeReference(reference.id)} disabled={busy || isIndexingReference}>
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {!document?.document_id && (
+        <section className="status-box">
+          <strong>No manuscript loaded.</strong>
+          <p>Add references above, then upload a DOCX or PDF manuscript to run a comparison.</p>
+          <button type="button" className="outline-button" onClick={() => setActive('upload')}>Upload manuscript</button>
+        </section>
+      )}
+
+      {document?.document_id && <>
       <section className="panel">
         <div className="panel-heading">
           <div>
@@ -237,6 +343,12 @@ export default function PlagiarismPage({ document, setActive }) {
 
       {report && (
         <>
+          {report.scope?.corpus?.version && config?.corpus?.version && report.scope.corpus.version !== config.corpus.version && (
+            <div className="status-box" role="status">
+              <strong>The local corpus changed after this report was created.</strong>
+              <p>Run the scan again to compare against the current reference set.</p>
+            </div>
+          )}
           <div className="status-box" role="status">
             <strong>{providerLabel(report.provider)}</strong>
             <p>{report.disclaimer}</p>
@@ -274,7 +386,9 @@ export default function PlagiarismPage({ document, setActive }) {
                         <strong>{source.title}</strong>
                         <span>
                           {source.matched_words} words · {source.passage_count} passage(s) ·{' '}
-                          {formatPercent(source.max_similarity)} peak similarity
+                          {formatPercent(source.max_similarity)} peak match
+                          {' · '}{formatPercent(source.similarity)} source similarity
+                          {source.filename && ` · ${source.filename}`}
                           {source.url && (
                             <>
                               {' · '}
@@ -317,12 +431,27 @@ export default function PlagiarismPage({ document, setActive }) {
           <section className="panel">
             <div className="panel-heading">
               <div><p className="kicker">PASSAGES</p><h2>Matching passages</h2></div>
+              <label className="plag-filter">Filter
+                <select value={matchFilter} onChange={(event) => setMatchFilter(event.target.value)}>
+                  <option value="all">All match types</option>
+                  <option value="exact">Exact</option>
+                  <option value="near_exact">Near-exact</option>
+                  <option value="semantic">Semantic candidate</option>
+                </select>
+              </label>
             </div>
             <div className="plag-matches">
+              <div className="source-highlight-legend" aria-label="Source highlight legend">
+                {(report.sources || []).map((source) => (
+                  <span key={source.id}><i style={{ backgroundColor: sourceColors.get(source.id) }} />{source.title}</span>
+                ))}
+              </div>
               {(report.matches || []).length === 0 ? (
                 <div className="status-box"><strong>No matching passages</strong><p>Nothing in the manuscript overlapped the identified sources.</p></div>
+              ) : visibleMatches.length === 0 ? (
+                <div className="status-box"><strong>No matches for this filter.</strong><p>Choose another match type to review evidence.</p></div>
               ) : (
-                (report.matches || []).map((match) => {
+                visibleMatches.map((match) => {
                   const meta = classificationMeta(match.classification)
                   return (
                     <article className={`plag-match ${meta.tone}`} key={match.id}>
@@ -333,13 +462,23 @@ export default function PlagiarismPage({ document, setActive }) {
                           {match.coverage != null ? ` · ${formatPercent(match.coverage)} coverage` : ''}
                         </small>
                       </div>
-                      <mark className="plag-mark">{match.passage}</mark>
+                      <div className="plag-evidence-grid">
+                        <div>
+                          <span className="evidence-label">MANUSCRIPT · paragraph {match.location?.paragraph_number ?? '—'}</span>
+                          <mark className="plag-mark" style={{ backgroundColor: sourceColors.get(match.source?.id) || SOURCE_HIGHLIGHTS[0] }}>{match.passage}</mark>
+                        </div>
+                        <div>
+                          <span className="evidence-label">SOURCE · page {match.source_location?.page ?? '—'}</span>
+                          <p className="plag-mark source-excerpt">{match.matched_text || 'Source excerpt unavailable.'}</p>
+                        </div>
+                      </div>
                       <div className="plag-match-source">
                         <span>
                           Located in {match.location?.section_heading || 'body'} · paragraph {match.location?.paragraph_number ?? '—'}
                         </span>
-                        <span>Source: {match.source?.title}</span>
-                        {match.matched_text && <span className="plag-snippet">Matched text: “{match.matched_text}”</span>}
+                        <span>Source: {match.source?.title}{match.source?.authors?.length ? ` · ${match.source.authors.join(', ')}` : ''}{match.source?.year ? ` · ${match.source.year}` : ''}</span>
+                        {match.source?.filename && <span>File: {match.source.filename}</span>}
+                        {match.source_location?.page && <span>Reference page: {match.source_location.page}</span>}
                         <span className="plag-note">{match.note || meta.description}</span>
                       </div>
                     </article>
@@ -370,6 +509,8 @@ export default function PlagiarismPage({ document, setActive }) {
               </div>
               <div className="info-list">
                 <p><strong>Corpus:</strong> {report.scope?.corpus?.name} ({report.scope?.corpus?.source_count} sources)</p>
+                <p><strong>Matcher version:</strong> {report.algorithm_version || 'legacy'}</p>
+                <p><strong>Corpus fingerprint:</strong> {report.scope?.corpus?.version?.slice(0, 12) || 'unavailable'}</p>
                 <p><strong>Engines:</strong> {(report.engines || []).map((engine) => `${engine.engine}: ${engine.status}`).join(', ')}</p>
                 <ul className="mini-list">
                   {(report.scope?.limitations || []).map((limitation) => <li key={limitation}>{limitation}</li>)}
@@ -416,11 +557,13 @@ export default function PlagiarismPage({ document, setActive }) {
                 Only suspected unattributed overlap is counted as a potential integrity concern, and even then it is a
                 signal to review — not proof of plagiarism.
               </p>
+              <p><strong>Score:</strong> {report.summary?.score_status === 'insufficient_content' ? 'Unavailable because no eligible manuscript words were available.' : report.summary?.score_method}</p>
               <p>The original manuscript and its citations are never modified by this check.</p>
             </div>
           </div>
         </>
       )}
+      </>}
     </>
   )
 }

@@ -85,6 +85,27 @@ CREATE TABLE IF NOT EXISTS plagiarism_scans (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(document_id) REFERENCES documents(id)
 );
+CREATE TABLE IF NOT EXISTS plagiarism_reference_documents (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    original_filename TEXT NOT NULL,
+    pdf_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    title TEXT NOT NULL,
+    authors_json TEXT NOT NULL DEFAULT '[]',
+    year TEXT,
+    page_count INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,
+    error TEXT,
+    duplicate_of TEXT,
+    text_content TEXT NOT NULL DEFAULT '',
+    page_spans_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS idx_plagiarism_reference_user_status
+    ON plagiarism_reference_documents(user_id, status);
 """
 
 @contextmanager

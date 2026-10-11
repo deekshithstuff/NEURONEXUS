@@ -1,0 +1,51 @@
+id,filename,title,kind
+PPC-001,"REF_01_Low_Cost_IoT_Water_Level_Monitoring.pdf","Low-Cost IoT Water-Level Monitoring",synthetic_demo_fixture
+PPC-002,"REF_02_Edge_Based_Crop_Disease_Screening.pdf","Edge-Based Crop Disease Screening",synthetic_demo_fixture
+PPC-003,"REF_03_Secure_Telemetry_for_Autonomous_Robots.pdf","Secure Telemetry for Autonomous Robots",synthetic_demo_fixture
+PPC-004,"REF_04_Energy_Aware_Scheduling_for_Sensor_Nodes.pdf","Energy-Aware Scheduling for Sensor Nodes",synthetic_demo_fixture
+PPC-005,"REF_05_Traffic_Speed_Estimation_Using_Infrared_Gates.pdf","Traffic Speed Estimation Using Infrared Gates",synthetic_demo_fixture
+PPC-006,"REF_06_Local_Corpus_Similarity_Analysis_for_Research.pdf","Local-Corpus Similarity Analysis for Research Drafts",synthetic_demo_fixture
+PPC-007,"REF_07_Privacy_Aware_Attendance_Logging_with_QR_Code.pdf","Privacy-Aware Attendance Logging with QR Codes",synthetic_demo_fixture
+PPC-008,"REF_08_Solar_Powered_Environmental_Monitoring.pdf","Solar-Powered Environmental Monitoring",synthetic_demo_fixture
+PPC-009,"REF_09_Explainability_Methods_for_Tabular_Risk_Model.pdf","Explainability Methods for Tabular Risk Models",synthetic_demo_fixture
+PPC-010,"REF_10_Indoor_Navigation_Without_GNSS.pdf","Indoor Navigation Without GNSS",synthetic_demo_fixture
+PPC-011,"REF_11_API_Validation_for_Research_Documents.pdf","API Validation for Research Documents",synthetic_demo_fixture
+PPC-012,"REF_12_Citation_Coverage_Checks_in_Manuscripts.pdf","Citation Coverage Checks in Manuscripts",synthetic_demo_fixture
+PPC-013,"REF_13_Sensor_Fault_Detection_in_Smart_Agriculture.pdf","Sensor Fault Detection in Smart Agriculture",synthetic_demo_fixture
+PPC-014,"REF_14_Data_Transfer_for_Intermittently_Connected_De.pdf","Data Transfer for Intermittently Connected Devices",synthetic_demo_fixture
+PPC-015,"REF_15_OCR_Quality_for_Scanned_Technical_PDFs.pdf","OCR Quality for Scanned Technical PDFs",synthetic_demo_fixture
+PPC-016,"REF_16_Collaborative_Manuscript_Version_Review.pdf","Collaborative Manuscript Version Review",synthetic_demo_fixture
+PPC-017,"REF_17_Journal_Recommendation_from_Scope_Metadata.pdf","Journal Recommendation from Scope Metadata",synthetic_demo_fixture
+PPC-018,"REF_18_Hysteresis_Control_for_Water_Pumps.pdf","Hysteresis Control for Water Pumps",synthetic_demo_fixture
+PPC-019,"REF_19_Campus_Energy_Monitoring_Dashboard.pdf","Campus Energy Monitoring Dashboard",synthetic_demo_fixture
+PPC-020,"REF_20_Threat_Modeling_for_Student_IoT_Projects.pdf","Threat Modeling for Student IoT Projects",synthetic_demo_fixture
+PPC-021,"REF_21_TinyML_for_Acoustic_Event_Classification.pdf","TinyML for Acoustic Event Classification",synthetic_demo_fixture
+PPC-022,"REF_22_Moving_Average_Filters_for_Noisy_Sensors.pdf","Moving-Average Filters for Noisy Sensors",synthetic_demo_fixture
+PPC-023,"REF_23_Digital_Twins_for_Manufacturing_Labs.pdf","Digital Twins for Manufacturing Labs",synthetic_demo_fixture
+PPC-024,"REF_24_Secure_File_Upload_Design.pdf","Secure File Upload Design",synthetic_demo_fixture
+PPC-025,"REF_25_Missing_Section_Detection_in_Research_Papers.pdf","Missing-Section Detection in Research Papers",synthetic_demo_fixture
+PPC-026,"REF_26_Exact_and_Near_Exact_Text_Matching.pdf","Exact and Near-Exact Text Matching",synthetic_demo_fixture
+PPC-027,"REF_27_Low_Cost_Air_Quality_Logging.pdf","Low-Cost Air Quality Logging",synthetic_demo_fixture
+PPC-028,"REF_28_Indoor_Delivery_Rover_Route_Planning.pdf","Indoor Delivery Rover Route Planning",synthetic_demo_fixture
+PPC-029,"REF_29_Anomaly_Detection_in_Telemetry_Time_Series.pdf","Anomaly Detection in Telemetry Time Series",synthetic_demo_fixture
+PPC-030,"REF_30_Usability_Testing_for_Research_Assistants.pdf","Usability Testing for Research Assistants",synthetic_demo_fixture
+PPC-031,"REF_31_Metadata_Extraction_from_Academic_PDFs.pdf","Metadata Extraction from Academic PDFs",synthetic_demo_fixture
+PPC-032,"REF_32_Data_Quality_in_Smart_Irrigation.pdf","Data Quality in Smart Irrigation",synthetic_demo_fixture
+PPC-033,"REF_33_Human_Review_of_AI_Generated_Suggestions.pdf","Human Review of AI-Generated Suggestions",synthetic_demo_fixture
+PPC-034,"REF_34_Battery_Health_Estimation_for_Educational_Rob.pdf","Battery Health Estimation for Educational Robots",synthetic_demo_fixture
+PPC-035,"REF_35_Wireless_Sensor_Network_Reliability.pdf","Wireless Sensor Network Reliability",synthetic_demo_fixture
+PPC-036,"REF_36_Reproducible_Embedded_System_Experiments.pdf","Reproducible Embedded-System Experiments",synthetic_demo_fixture
+PPC-037,"REF_37_Document_Export_Validation.pdf","Document Export Validation",synthetic_demo_fixture
+PPC-038,"REF_38_Multi_Criteria_Evaluation_of_Small_AI_Models.pdf","Multi-Criteria Evaluation of Small AI Models",synthetic_demo_fixture
+PPC-039,"REF_39_Readable_Technical_Dashboards.pdf","Readable Technical Dashboards",synthetic_demo_fixture
+PPC-040,"REF_40_Local_Knowledge_Base_for_Technical_Support.pdf","Local Knowledge Base for Technical Support",synthetic_demo_fixture
+PPC-041,"REF_41_Fault_Tolerant_Control_for_a_Two_Wheel_Robot.pdf","Fault-Tolerant Control for a Two-Wheel Robot",synthetic_demo_fixture
+PPC-042,"REF_42_Privacy_Risks_in_Educational_Analytics.pdf","Privacy Risks in Educational Analytics",synthetic_demo_fixture
+PPC-043,"REF_43_Calibration_Drift_in_Distance_Sensors.pdf","Calibration Drift in Distance Sensors",synthetic_demo_fixture
+PPC-044,"REF_44_Safety_Monitoring_for_Pump_Automation.pdf","Safety Monitoring for Pump Automation",synthetic_demo_fixture
+PPC-045,"REF_45_Evidence_Based_Research_Readiness_Scoring.pdf","Evidence-Based Research Readiness Scoring",synthetic_demo_fixture
+PPC-046,"REF_46_Low_Bandwidth_Remote_Telemetry.pdf","Low-Bandwidth Remote Telemetry",synthetic_demo_fixture
+PPC-047,"REF_47_Benchmarking_PDF_Text_Extraction.pdf","Benchmarking PDF Text Extraction",synthetic_demo_fixture
+PPC-048,"REF_48_Bibliography_Checks_with_DOI_Metadata.pdf","Bibliography Checks with DOI Metadata",synthetic_demo_fixture
+PPC-049,"REF_49_Event_Driven_Robotics_Dashboard.pdf","Event-Driven Robotics Dashboard",synthetic_demo_fixture
+PPC-050,"REF_50_Transparent_Similarity_Reports_for_Authors.pdf","Transparent Similarity Reports for Authors",synthetic_demo_fixture

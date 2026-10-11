@@ -83,6 +83,14 @@ export const researchApi = {
   clearAuth: () => globalThis.sessionStorage.removeItem(AUTH_TOKEN_KEY),
   getAiStatus: () => request('/api/ai/status'),
   getPlagiarismStatus: () => request('/api/plagiarism/status'),
+  getPlagiarismReferences: () => request('/api/plagiarism/references'),
+  uploadPlagiarismReference: (file) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request('/api/plagiarism/references', { method: 'POST', body })
+  },
+  deletePlagiarismReference: (id) => request(`/api/plagiarism/references/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  reindexPlagiarismReference: (id) => request(`/api/plagiarism/references/${encodeURIComponent(id)}/reindex`, { method: 'POST' }),
   startPlagiarismScan: (id, payload) => request(`/api/documents/${id}/plagiarism/scan`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   getPlagiarismScan: (scanId) => request(`/api/plagiarism/scans/${scanId}`),
   getPlagiarismScans: (id) => request(`/api/documents/${id}/plagiarism/scans`),

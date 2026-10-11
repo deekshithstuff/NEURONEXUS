@@ -36,6 +36,7 @@ EXACT_COVERAGE = 0.9
 NEAR_EXACT_RATIO = 0.75
 MIN_CANDIDATE_OVERLAP = 4
 MAX_CANDIDATES = 200
+LEXICAL_ENGINE_VERSION = "paperpilot-lexical-v2"
 _CORPUS_INDEX_CACHE: dict[str, tuple[list[dict[str, Any]], dict[str, set[int]]]] = {}
 
 BOILERPLATE_PHRASES = {
@@ -66,7 +67,7 @@ def extract_manuscript_passages(analysis: dict[str, Any]) -> tuple[list[dict[str
         (normalize_whitespace(section.get("content") or ""), section) for section in sections
     ]
     passages: list[dict[str, Any]] = []
-    excluded = {"references_words": 0, "boilerplate_passages": 0}
+    excluded = {"references_words": 0, "boilerplate_passages": 0, "scored_words": 0}
     citation_paragraphs = _citation_paragraphs(analysis)
     for paragraph_index, paragraph in enumerate(paragraphs):
         section = _section_for_paragraph(paragraph, normalized_sections)
@@ -84,6 +85,7 @@ def extract_manuscript_passages(analysis: dict[str, Any]) -> tuple[list[dict[str
             if _is_boilerplate(sentence):
                 excluded["boilerplate_passages"] += 1
                 continue
+            excluded["scored_words"] += word_count(sentence)
             quoted = span_within(quote_spans, start, end) or is_fully_quoted(sentence)
             attributed = has_citation(sentence) or (quoted and paragraph_has_citation)
             passages.append(
@@ -137,7 +139,7 @@ def index_corpus(sources: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], d
             [
                 {
                     key: source.get(key)
-                    for key in ("id", "title", "text", "url", "source_type", "authors", "year")
+                    for key in ("id", "title", "text", "url", "source_type", "authors", "year", "filename", "page_spans")
                 }
                 for source in sources
             ],
@@ -192,8 +194,7 @@ def match_passages(
         tokens = passage["tokens"]
         if len(tokens) < MIN_MATCH_WORDS:
             continue
-        best: dict[str, Any] | None = None
-        matcher: SequenceMatcher | None = None
+        best_by_source: dict[str, dict[str, Any]] = {}
         for candidate in _candidate_indices(tokens, inverted):
             corpus_sentence = corpus_sentences[candidate]
             current = SequenceMatcher(None, tokens, corpus_sentence["tokens"], autojunk=False)
@@ -205,21 +206,34 @@ def match_passages(
             qualifies = coverage >= MIN_COVERAGE and (coverage >= EXACT_COVERAGE or ratio >= NEAR_EXACT_RATIO)
             if not qualifies:
                 continue
+            source_id = corpus_sentence["source"]["id"]
+            best = best_by_source.get(source_id)
             if best is None or matched > best["matched_words"]:
-                best = {
+                best_by_source[source_id] = {
                     "source_sentence": corpus_sentence,
                     "matched_words": matched,
                     "coverage": coverage,
                     "ratio": ratio,
+                    "matcher": current,
                 }
-                matcher = current
-        if best is not None:
+        for best in best_by_source.values():
             matches.append(_build_match(passage, best))
     return matches
 
 
 def _build_match(passage: dict[str, Any], best: dict[str, Any]) -> dict[str, Any]:
     source = best["source_sentence"]["source"]
+    matched_token_indices = sorted({
+        index
+        for block in best["matcher"].get_matching_blocks()
+        for index in range(block.a, block.a + block.size)
+    })
+    source_start = best["source_sentence"]["char_start"]
+    source_end = best["source_sentence"]["char_end"]
+    page_number = next((
+        span["page"] for span in source.get("page_spans", [])
+        if span.get("start", 0) <= source_start < span.get("end", 0)
+    ), None)
     method = "exact" if best["coverage"] >= EXACT_COVERAGE else "near_exact"
     classification = _classification(passage)
     return {
@@ -240,15 +254,18 @@ def _build_match(passage: dict[str, Any], best: dict[str, Any]) -> dict[str, Any
             "source_type": source["source_type"],
             "authors": source["authors"],
             "year": source["year"],
+            "filename": source.get("filename"),
         },
         "source_location": {
-            "char_start": best["source_sentence"]["char_start"],
-            "char_end": best["source_sentence"]["char_end"],
+            "char_start": source_start,
+            "char_end": source_end,
+            "page": page_number,
         },
         "method": method,
         "similarity": round(best["ratio"], 4),
         "coverage": round(best["coverage"], 4),
         "matched_words": best["matched_words"],
+        "matched_token_indices": matched_token_indices,
         "attributed": bool(passage["attributed"]),
         "quoted": bool(passage["quoted"]),
         "classification": classification,
@@ -282,28 +299,30 @@ def build_report(
     classifier_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     numbered = _number_matches(matches)
-    source_summary = _source_summary(numbered)
+    source_summary = _source_summary(numbered, total_words)
     lexical_matches = [match for match in numbered if match["method"] in {"exact", "near_exact"}]
     semantic_results = [match for match in numbered if match["method"] == "semantic"]
     external_results = [match for match in numbered if match["method"] == "external"]
     source_groups = {
-        "lexical": _source_summary(lexical_matches),
-        "semantic": _source_summary(semantic_results),
-        "external": _source_summary(external_results),
+        "lexical": _source_summary(lexical_matches, total_words),
+        "semantic": _source_summary(semantic_results, total_words),
+        "external": _source_summary(external_results, total_words),
     }
-    matched_words = sum(match["matched_words"] for match in lexical_matches)
+    matched_words = _unique_match_word_count(lexical_matches)
     suspected = [match for match in lexical_matches if match["classification"] == "suspected_unattributed"]
     quotations = [
         match for match in lexical_matches
         if match["classification"] in {"quotation", "attributed_quotation"}
     ]
     cited = [match for match in lexical_matches if match["classification"] == "cited_match"]
-    suspected_words = sum(match["matched_words"] for match in suspected)
+    suspected_words = _unique_match_word_count(suspected)
     summary = {
-        "overall_similarity": round(matched_words / total_words, 4) if total_words else 0.0,
+        "overall_similarity": round(matched_words / total_words, 4) if total_words else None,
+        "score_status": "available" if total_words else "insufficient_content",
         "overall_similarity_scope": "Exact/near-exact lexical overlap against the local comparison corpus only.",
         "matched_words": matched_words,
         "total_words": total_words,
+        "score_method": "Unique matched manuscript token positions divided by eligible manuscript words; reference-list and configured boilerplate text are excluded.",
         "match_count": len(numbered),
         "source_count": len(source_summary),
         "lexical_match_count": len(lexical_matches),
@@ -313,13 +332,14 @@ def build_report(
         "semantic_source_count": len(source_groups["semantic"]),
         "external_source_count": len(source_groups["external"]),
         "suspected_unattributed_words": suspected_words,
-        "suspected_unattributed_ratio": round(suspected_words / total_words, 4) if total_words else 0.0,
+        "suspected_unattributed_ratio": round(suspected_words / total_words, 4) if total_words else None,
         "attributed_match_count": len(cited),
         "quotation_match_count": len(quotations),
     }
     warnings = _citation_warnings(analysis or {}, suspected, quotations, citation_style)
     return {
         "document_id": document_id,
+        "algorithm_version": LEXICAL_ENGINE_VERSION,
         "provider": provider,
         "engines": engine_status,
         "summary": summary,
@@ -398,7 +418,7 @@ def _number_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return numbered
 
 
-def _source_summary(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _source_summary(matches: list[dict[str, Any]], total_words: int | None = None) -> list[dict[str, Any]]:
     totals: dict[str, dict[str, Any]] = {}
     for match in matches:
         source = match["source"]
@@ -411,15 +431,43 @@ def _source_summary(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "source_type": source["source_type"],
                 "authors": source["authors"],
                 "year": source["year"],
+                "filename": source.get("filename"),
                 "matched_words": 0,
                 "passage_count": 0,
                 "max_similarity": 0.0,
+                "similarity": 0.0,
             },
         )
-        entry["matched_words"] += match["matched_words"]
+        token_indices = match.get("matched_token_indices")
+        if token_indices is not None:
+            positions = entry.setdefault("_positions", set())
+            for token_index in token_indices:
+                positions.add((match["location"].get("paragraph_index"), match["location"].get("sentence_index"), token_index))
+            entry["matched_words"] = len(positions)
+        else:
+            entry["matched_words"] += match["matched_words"]
         entry["passage_count"] += 1
         entry["max_similarity"] = max(entry["max_similarity"], match["similarity"])
+    for entry in totals.values():
+        entry.pop("_positions", None)
+        if total_words:
+            entry["similarity"] = round(entry["matched_words"] / total_words, 4)
     return sorted(totals.values(), key=lambda entry: (-entry["matched_words"], entry["id"]))
+
+
+def _unique_match_word_count(matches: list[dict[str, Any]]) -> int:
+    positions: set[tuple[int, int, int]] = set()
+    fallback = 0
+    for match in matches:
+        indices = match.get("matched_token_indices")
+        if indices is None:
+            fallback += int(match.get("matched_words", 0))
+            continue
+        location = match.get("location") or {}
+        paragraph = int(location.get("paragraph_index", -1))
+        sentence = int(location.get("sentence_index", -1))
+        positions.update((paragraph, sentence, int(index)) for index in indices)
+    return len(positions) + fallback
 
 
 def _citation_warnings(
@@ -482,7 +530,7 @@ def analyze(
     engines = engines or []
     document_id = analysis.get("document_id") or ""
     passages, excluded = extract_manuscript_passages(analysis)
-    total_words = sum(len(passage["tokens"]) for passage in passages)
+    total_words = excluded.get("scored_words", sum(len(passage["tokens"]) for passage in passages))
     corpus_sentences, inverted = index_corpus(sources)
     matches = match_passages(passages, corpus_sentences, inverted)
     candidate_indices = [_candidate_indices(passage["tokens"], inverted) for passage in passages]

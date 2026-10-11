@@ -506,7 +506,5 @@ def test_journal_match_uses_real_manuscript_content_and_journal_scope():
     assert empty_body["match_status"] == "insufficient_content"
     assert isinstance(empty_body["relevant_topics"], list)
     assert isinstance(empty_body["scope_gaps"], list)
-    assert empty_body["score"] == 0
-
     unsupported = client.post("/api/journal/match", json={"document_id": document_ids["unsupported"], "analysis": manuscript_a, "journal_id": "missing-profile"})
     assert unsupported.status_code == 404

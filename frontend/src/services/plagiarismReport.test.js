@@ -12,6 +12,7 @@ describe('plagiarismReport helpers', () => {
   it('formats similarity values as percentages', () => {
     expect(formatPercent(0.1234)).toBe('12.3%')
     expect(formatPercent(0)).toBe('0.0%')
+    expect(formatPercent(null)).toBe('Unavailable')
     expect(formatPercent(undefined)).toBe('—')
   })
 

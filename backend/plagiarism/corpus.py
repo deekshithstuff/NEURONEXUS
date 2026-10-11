@@ -11,6 +11,7 @@ between accounts.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 from typing import Any
@@ -18,11 +19,15 @@ from typing import Any
 BUNDLED_CORPUS_PATH = Path(__file__).resolve().parent / "corpus" / "sources.json"
 
 
-def load_corpus(extra_dir: str | None = None) -> list[dict[str, Any]]:
+def load_corpus(extra_dir: str | None = None, *, user_id: str | None = None) -> list[dict[str, Any]]:
     sources: list[dict[str, Any]] = []
     sources.extend(_load_bundled())
     directory = extra_dir if extra_dir is not None else os.getenv("PAPERPILOT_PLAGIARISM_CORPUS_DIR")
     sources.extend(_load_directory(directory))
+    if user_id:
+        from .local_corpus import load_sources
+
+        sources.extend(load_sources(user_id))
     return _deduplicate(sources)
 
 
@@ -106,6 +111,8 @@ def _normalize_source(entry: dict[str, Any]) -> dict[str, Any]:
         "url": entry.get("url"),
         "source_type": str(entry.get("source_type") or "corpus"),
         "text": str(entry.get("text") or ""),
+        "filename": entry.get("filename"),
+        "page_spans": list(entry.get("page_spans") or []),
     }
 
 
@@ -122,15 +129,20 @@ def _deduplicate(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return unique
 
 
-def corpus_info(sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def corpus_info(sources: list[dict[str, Any]] | None = None, *, user_id: str | None = None) -> dict[str, Any]:
     corpus_error = None
     if sources is None:
         try:
-            sources = load_corpus()
+            sources = load_corpus(user_id=user_id)
         except ValueError as exc:
             sources = []
             corpus_error = str(exc)
     sources = sources or []
+    version_payload = json.dumps(
+        [(source["id"], source["text"]) for source in sorted(sources, key=lambda item: item["id"])],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     custom_dir = os.getenv("PAPERPILOT_PLAGIARISM_CORPUS_DIR")
     demo_count = sum(source.get("source_type") == "bundled_synthetic" for source in sources)
     custom_count = len(sources) - demo_count
@@ -139,6 +151,7 @@ def corpus_info(sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         "error": corpus_error,
         "name": "Identified PaperPilot comparison corpus",
         "source_count": len(sources),
+        "version": hashlib.sha256(version_payload.encode("utf-8")).hexdigest(),
         "synthetic_demo_source_count": demo_count,
         "custom_source_count": custom_count,
         "custom_corpus_dir_configured": bool(custom_dir),
@@ -152,8 +165,9 @@ def corpus_info(sources: list[dict[str, Any]] | None = None) -> dict[str, Any]:
             )
         ),
         "description": (
-            "The checker compares only with identified bundled synthetic demonstration texts and "
-            "operator-provided local sources. It does not search all published research or the internet. "
-            "Manuscripts are never added to the corpus or shared between accounts."
+            "The checker compares only with identified bundled synthetic demonstration texts, "
+            "operator-provided local sources, and PDFs indexed for this account. It does not search "
+            "all published research or the internet. Uploaded references and manuscripts are not "
+            "shared between accounts."
         ),
     }
