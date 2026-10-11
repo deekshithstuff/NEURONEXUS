@@ -11,8 +11,18 @@ class PDFGenerator:
         if output_path is None:
             raise ValueError("output_path is required for PDF generation.")
         content = text
+        page_width, page_height = 595.28, 841.89
+        margins = (54.0, 54.0, 54.0, 54.0)
         if not content and docx_path:
             content = self._extract_docx_text(docx_path)
+        if docx_path:
+            section = Document(docx_path).sections[0]
+            page_width = float(section.page_width.inches) * 72
+            page_height = float(section.page_height.inches) * 72
+            margins = tuple(
+                float(value.inches) * 72
+                for value in (section.left_margin, section.top_margin, section.right_margin, section.bottom_margin)
+            )
         if not content:
             content = (
                 "Generated manuscript preview\n\n"
@@ -31,9 +41,9 @@ class PDFGenerator:
                 )
                 if boundary > text_position:
                     chunk_end = boundary + 1
-            page = doc.new_page()
+            page = doc.new_page(width=page_width, height=page_height)
             remaining_space = page.insert_textbox(
-                fitz.Rect(54, 54, page.rect.width - 54, page.rect.height - 54),
+                fitz.Rect(margins[0], margins[1], page.rect.width - margins[2], page.rect.height - margins[3]),
                 content[text_position:chunk_end],
                 fontsize=11,
                 fontname="helv",

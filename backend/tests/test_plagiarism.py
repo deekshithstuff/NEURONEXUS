@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+import fitz
 from docx import Document
 from fastapi.testclient import TestClient
 
@@ -171,7 +172,8 @@ def test_external_provider_matches_are_separate_from_local_similarity():
 def test_engine_handles_empty_document():
     report = analyze(_analysis([]), CORPUS, ["lexical"])
     assert report["summary"]["total_words"] == 0
-    assert report["summary"]["overall_similarity"] == 0.0
+    assert report["summary"]["overall_similarity"] is None
+    assert report["summary"]["score_status"] == "insufficient_content"
     assert report["matches"] == []
 
 
@@ -210,6 +212,151 @@ def _upload_and_analyze(client: TestClient, headers: dict, tmp_path: Path, parag
     analyzed = client.post(f"/api/documents/{document_id}/analyze", headers=headers, json={})
     assert analyzed.status_code == 200, analyzed.text
     return document_id
+
+
+def _reference_pdf(text: str, title: str = "Local Research Source") -> bytes:
+    pdf = fitz.open()
+    page = pdf.new_page()
+    page.insert_textbox(fitz.Rect(42, 42, 550, 760), text, fontsize=10)
+    pdf.set_metadata({"title": title, "author": "R. Researcher; S. Scholar", "creationDate": "D:20240101000000"})
+    content = pdf.tobytes()
+    pdf.close()
+    return content
+
+
+def test_local_reference_pdf_ingestion_is_deduplicated_scoped_and_traceable():
+    with TestClient(app) as session:
+        owner_headers = _register(session)
+        other_headers = _register(session)
+        pdf = _reference_pdf(COPILED_SENTENCE + " " + ORIGINAL_SENTENCE + " " + ORIGINAL_SENTENCE)
+        response = session.post(
+            "/api/plagiarism/references",
+            headers=owner_headers,
+            files={"file": ("licensed-paper.pdf", pdf, "application/pdf")},
+        )
+        assert response.status_code == 200, response.text
+        reference = response.json()
+        assert reference["status"] == "indexed"
+        assert reference["title"] == "Local Research Source"
+        assert reference["authors"] == ["R. Researcher", "S. Scholar"]
+
+        duplicate = session.post(
+            "/api/plagiarism/references",
+            headers=owner_headers,
+            files={"file": ("licensed-paper-copy.pdf", pdf, "application/pdf")},
+        )
+        assert duplicate.status_code == 200
+        assert duplicate.json()["id"] == reference["id"]
+        assert duplicate.json()["duplicate_upload"] is True
+
+        near_duplicate = session.post(
+            "/api/plagiarism/references",
+            headers=owner_headers,
+            files={"file": ("near-copy.pdf", _reference_pdf(COPILED_SENTENCE + " " + ORIGINAL_SENTENCE + " " + ORIGINAL_SENTENCE, "Copy"), "application/pdf")},
+        )
+        assert near_duplicate.status_code == 200
+        assert near_duplicate.json()["status"] == "duplicate"
+        assert near_duplicate.json()["duplicate_of"] == reference["id"]
+
+        owner_sources = load_corpus(user_id=session.get("/api/auth/me", headers=owner_headers).json()["user"]["id"])
+        local_source = next(source for source in owner_sources if source["id"] == reference["id"])
+        report = analyze(_analysis([COPILED_SENTENCE]), [local_source], ["lexical"])
+        match = report["matches"][0]
+        assert match["source_location"]["page"] == 1
+        assert match["source"]["filename"] == "licensed-paper.pdf"
+        reindexed = session.post(f"/api/plagiarism/references/{reference['id']}/reindex", headers=owner_headers)
+        assert reindexed.status_code == 200
+        assert reindexed.json()["status"] == "indexed"
+
+        other_list = session.get("/api/plagiarism/references", headers=other_headers)
+        assert other_list.status_code == 200
+        assert other_list.json()["documents"] == []
+        assert all(source["id"] != reference["id"] for source in load_corpus(user_id=session.get("/api/auth/me", headers=other_headers).json()["user"]["id"]))
+
+        removed = session.delete(f"/api/plagiarism/references/{reference['id']}", headers=owner_headers)
+        assert removed.status_code == 200
+        assert all(source["id"] != reference["id"] for source in load_corpus(user_id=session.get("/api/auth/me", headers=owner_headers).json()["user"]["id"]))
+        assert session.get(f"/api/plagiarism/references/{reference['id']}", headers=other_headers).status_code == 404
+
+
+def test_reference_ingestion_reports_scanned_and_corrupted_pdfs():
+    with TestClient(app) as session:
+        headers = _register(session)
+        blank = fitz.open()
+        blank.new_page()
+        scanned_pdf = blank.tobytes()
+        blank.close()
+        scanned = session.post(
+            "/api/plagiarism/references",
+            headers=headers,
+            files={"file": ("scanned.pdf", scanned_pdf, "application/pdf")},
+        )
+        assert scanned.status_code == 200
+        assert scanned.json()["status"] == "needs_ocr"
+        assert "OCR" in scanned.json()["error"]
+
+        corrupted = session.post(
+            "/api/plagiarism/references",
+            headers=headers,
+            files={"file": ("broken.pdf", b"%PDF-corrupt", "application/pdf")},
+        )
+        assert corrupted.status_code == 200
+        assert corrupted.json()["status"] == "failed"
+        assert corrupted.json()["error"]
+
+        empty_pdf = session.post(
+            "/api/plagiarism/references",
+            headers=headers,
+            files={"file": ("empty.pdf", b"%PDF-1.7\n%%EOF", "application/pdf")},
+        )
+        assert empty_pdf.status_code == 200
+        assert empty_pdf.json()["status"] == "failed"
+
+
+def test_reference_ingestion_uses_filename_when_pdf_metadata_is_anonymous():
+    pdf = fitz.open()
+    page = pdf.new_page()
+    text = (
+        "This synthetic reference describes a carefully bounded engineering study. "
+        "It records the test setup, observations, and reproducible validation steps. "
+        "The fixture provides enough selectable text for indexing and matching. "
+        "Additional sentences explain the sampling procedure, quality checks, and expected result. "
+        "Each observation is stored with its original page location so reviewers can reproduce "
+        "the comparison and inspect the source passage beside the manuscript evidence."
+    )
+    page.insert_textbox(fitz.Rect(42, 42, 550, 760), text, fontsize=10)
+    pdf.set_metadata({"title": "(anonymous)", "author": "(anonymous)"})
+    content = pdf.tobytes()
+    pdf.close()
+
+    with TestClient(app) as session:
+        headers = _register(session)
+        response = session.post(
+            "/api/plagiarism/references",
+            headers=headers,
+            files={"file": ("REF_Example_Demo_Paper.pdf", content, "application/pdf")},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "indexed"
+    assert response.json()["title"] == "Ref Example Demo Paper"
+    assert response.json()["authors"] == []
+
+
+def test_repeated_source_passages_do_not_double_count_similarity():
+    sources = [
+        {**CORPUS[0], "id": "source-a", "page_spans": [{"page": 3, "start": 0, "end": len(COPILED_SENTENCE)}]},
+        {**CORPUS[0], "id": "source-b", "page_spans": [{"page": 7, "start": 0, "end": len(COPILED_SENTENCE)}]},
+    ]
+    report = analyze(_analysis([COPILED_SENTENCE]), sources, ["lexical"])
+    assert len(report["matches"]) == 2
+    assert report["algorithm_version"] == "paperpilot-lexical-v2"
+    assert len(report["scope"]["corpus"]["version"]) == 64
+    assert {match["source_location"]["page"] for match in report["matches"]} == {3, 7}
+    assert report["summary"]["matched_words"] == len(COPILED_SENTENCE.split())
+    assert report["summary"]["overall_similarity"] == pytest.approx(
+        report["summary"]["matched_words"] / report["summary"]["total_words"]
+    )
 
 
 def _wait_for_scan(client: TestClient, headers: dict, scan_id: str, attempts: int = 200) -> dict:

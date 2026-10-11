@@ -16,6 +16,7 @@ from .engine import _candidate_indices, build_report, extract_manuscript_passage
 from .engine import analyze as analyze_internal
 from .external import ExternalScanError
 from .inference import classifier_status, score_retrieved_pairs
+from .local_corpus import list_documents as list_reference_documents
 from .semantic import semantic_matches, semantic_status
 
 ALLOWED_ENGINES = {"lexical", "semantic"}
@@ -52,10 +53,19 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def scan_config() -> dict[str, Any]:
+def scan_config(user_id: str | None = None) -> dict[str, Any]:
     semantic = semantic_status()
+    sources = load_corpus(user_id=user_id) if user_id else load_corpus()
+    reference_documents = list_reference_documents({"id": user_id})["documents"] if user_id else []
+    indexed_references = [item for item in reference_documents if item["status"] == "indexed"]
     return {
-        "corpus": corpus_info(),
+        "corpus": corpus_info(sources),
+        "reference_index": {
+            "indexed_count": len(indexed_references),
+            "document_count": len(reference_documents),
+            "last_indexed_at": max((item["updated_at"] for item in indexed_references if item["updated_at"]), default=None),
+            "failure_count": sum(item["status"] in {"failed", "needs_ocr"} for item in reference_documents),
+        },
         "semantic": semantic,
         "classifier": classifier_status(),
         "external": external.external_status(),
@@ -148,7 +158,7 @@ def run_scan(scan_id: str) -> None:
         engines = json.loads(row["engines_json"] or "[]")
         provider = row["provider"] or "internal"
         citation_style = _citation_style(document["selected_journal_id"])
-        sources = load_corpus()
+        sources = load_corpus(user_id=row["user_id"])
         if provider == "external":
             report = _run_external_scan(analysis, engines, citation_style, sources)
         else:
@@ -169,7 +179,7 @@ def _run_external_scan(
 ) -> dict[str, Any]:
     text = "\n\n".join(analysis.get("paragraphs") or [])
     passages, excluded = extract_manuscript_passages(analysis)
-    total_words = sum(len(passage["tokens"]) for passage in passages)
+    total_words = excluded.get("scored_words", sum(len(passage["tokens"]) for passage in passages))
     corpus_sentences, inverted = index_corpus(sources)
     matches = match_passages(passages, corpus_sentences, inverted)
     candidate_indices = [_candidate_indices(passage["tokens"], inverted) for passage in passages]

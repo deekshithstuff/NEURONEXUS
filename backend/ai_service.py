@@ -108,71 +108,81 @@ def _journal_scope_topics(journal: dict | None) -> set[str]:
     return topics
 
 
-def _match_score_for_topics(manuscript_text: str, journal: dict | None) -> tuple[float, list[str], list[str]]:
-    manuscript_tokens = _normalize_tokens(manuscript_text)
-    if not manuscript_tokens:
-        return 0.0, [], ["The manuscript content is missing, so journal scope compatibility could not be assessed from the document itself."]
+_SCOPE_STOP_WORDS = {
+    "a", "an", "and", "article", "applied", "empirical", "evaluation", "general",
+    "computer", "interdisciplinary", "journal", "method", "methods", "of", "paper", "research",
+    "science", "study", "studies", "system", "systems", "the", "with",
+}
 
-    normalized_manuscript = _normalize_text(manuscript_text).lower()
-    journal_scope_aliases = journal.get("scope_aliases") if isinstance(journal, dict) else {}
-    ranked_matches: list[tuple[str, float]] = []
-    seen: set[str] = set()
 
-    for _, aliases in (journal_scope_aliases or {}).items():
-        if not isinstance(aliases, (list, tuple, set)):
-            continue
-        for alias in aliases:
-            alias_text = _normalize_text(str(alias)).lower()
-            if not alias_text or alias_text in seen:
+def _match_score_for_topics(analysis: dict, journal: dict | None) -> tuple[float | None, list[str], list[str], str]:
+    fields = {
+        "title": (str(analysis.get("title") or ""), 1.5),
+        "abstract": (str(analysis.get("abstract") or ""), 1.2),
+        "keywords": (" ".join(str(item) for item in analysis.get("keywords") or []), 1.5),
+        "sections": (_section_text_for_match(analysis), 1.0),
+        "subject_area": (str(analysis.get("subject_area") or analysis.get("metadata", {}).get("subject_area") or ""), 1.5),
+    }
+    manuscript_tokens = set().union(*(_normalize_tokens(value) for value, _ in fields.values()))
+    if len(manuscript_tokens - _SCOPE_STOP_WORDS) < 6:
+        return None, [], ["Insufficient manuscript content for a reliable journal-scope comparison."], "insufficient_content"
+
+    if not isinstance(journal, dict):
+        return None, [], ["The selected journal profile is unavailable; scope compatibility cannot be assessed."], "scope_unavailable"
+
+    raw_topics = [str(item) for item in journal.get("scope_topics") or []]
+    aliases = journal.get("scope_aliases") or {}
+    for label, values in aliases.items():
+        raw_topics.append(str(label))
+        if isinstance(values, (list, tuple, set)):
+            raw_topics.extend(str(value) for value in values)
+    topics = list(dict.fromkeys(_normalize_text(topic).lower() for topic in raw_topics if _normalize_text(topic)))
+    topics = [topic for topic in topics if _normalize_tokens(topic) - _SCOPE_STOP_WORDS]
+    if not topics:
+        return None, [], ["This profile does not contain configured scope topics; suitability is unknown."], "scope_unavailable"
+
+    supported: list[tuple[str, float]] = []
+    for topic in topics:
+        topic_tokens = _normalize_tokens(topic) - _SCOPE_STOP_WORDS
+        strength = 0.0
+        for value, field_weight in fields.values():
+            normalized_value = _normalize_text(value).lower()
+            value_tokens = _normalize_tokens(value)
+            if re.search(rf"\b{re.escape(topic)}\b", normalized_value):
+                strength = max(strength, field_weight)
                 continue
-            alias_tokens = _normalize_tokens(alias_text)
-            if not alias_tokens:
-                continue
-            match_strength = 0.0
-            if alias_text in normalized_manuscript:
-                match_strength = 2.5
-            elif alias_tokens <= manuscript_tokens:
-                match_strength = 2.0
-            elif len(alias_tokens & manuscript_tokens) > 0:
-                match_strength = 1.0 + (len(alias_tokens & manuscript_tokens) / max(len(alias_tokens), 1))
-            if match_strength > 0:
-                ranked_matches.append((alias_text, match_strength))
-                seen.add(alias_text)
+            overlap = topic_tokens & value_tokens
+            if len(topic_tokens) == 1 and overlap:
+                strength = max(strength, field_weight * 0.8)
+            elif len(overlap) >= 2 and len(overlap) / len(topic_tokens) >= 0.67:
+                strength = max(strength, field_weight * 0.65)
+        if strength:
+            supported.append((topic, min(1.0, strength / 1.5)))
 
-    if ranked_matches:
-        ranked_matches.sort(key=lambda item: item[1], reverse=True)
-        matched_topics = [label for label, _ in ranked_matches[:5]]
-    else:
-        scope_tokens = _journal_scope_topics(journal)
-        overlaps = sorted(manuscript_tokens & scope_tokens)
-        if overlaps:
-            matched_topics = overlaps[:5]
-        else:
-            matched_topics = []
-
-    if not matched_topics:
-        return 0.0, [], ["The manuscript topic is not currently aligned with the selected journal's scope and requires further review."]
-
-    score = 0.0
-    for topic in matched_topics:
-        topic_tokens = _normalize_tokens(str(topic))
-        if not topic_tokens:
-            continue
-        overlap = len(topic_tokens & manuscript_tokens)
-        score += min(1.0, overlap / max(len(topic_tokens), 1))
-    score = round(min(0.99, score / max(len(matched_topics), 1)), 4)
-
+    score = round(sum(strength for _, strength in supported) / len(topics), 4)
+    matched_topics = [topic for topic, _ in sorted(supported, key=lambda item: (-item[1], item[0]))]
     gaps = []
-    if score < 0.45:
-        gaps.append("The manuscript topic does not closely match the selected journal's scope and should be reviewed further.")
-    elif score < 0.7:
-        gaps.append("The manuscript aligns partially with the journal's focus but may require a clearer topic positioning.")
+    if not matched_topics:
+        gaps.append("No configured journal-scope topics were found in the manuscript fields that were analyzed.")
+    elif score < 0.2:
+        gaps.append("Only limited scope evidence was found; review the journal's current aims and instructions.")
+    elif score < 0.4:
+        gaps.append("The manuscript has partial scope overlap; review the journal's current aims and instructions.")
+    return score, matched_topics, gaps, "evaluated"
 
-    return score, matched_topics[:5], gaps
+
+def _section_text_for_match(analysis: dict) -> str:
+    return " ".join(
+        f"{section.get('heading') or ''} {section.get('content') or ''}"
+        for section in analysis.get("sections") or []
+        if isinstance(section, dict)
+    )
 
 
 def analyze_quality(document_id: str, analysis: dict | None = None, journal_id: str | None = None) -> dict:
     document = analysis or {}
+    content_word_count = len(_collect_manuscript_terms(document).split())
+    insufficient_content = content_word_count < 40
     paragraphs = document.get("paragraphs") or [""]
     body = _normalize_text(document.get("abstract") or paragraphs[0])
     journal = get_journal_rules((journal_id or "nature").lower())
@@ -196,7 +206,8 @@ def analyze_quality(document_id: str, analysis: dict | None = None, journal_id: 
     return {
         "document_id": document_id,
         "module": "quality",
-        "quality_score": _evidence_score([
+        "analysis_status": "insufficient_content" if insufficient_content else "assessed",
+        "quality_score": None if insufficient_content else _evidence_score([
             not missing,
             gap_present,
             method_analysis["score"] >= 60,
@@ -209,7 +220,10 @@ def analyze_quality(document_id: str, analysis: dict | None = None, journal_id: 
         "missing_sections": missing,
         "writing_issues": writing_issues,
         "suggestions": list(dict.fromkeys(recommendations)),
-        "analysis_scope": f"Rule-based completeness assessment against the {journal.get('template_name', journal_id or 'selected')} profile; not a peer review.",
+        "analysis_scope": (
+            "Insufficient manuscript text for a meaningful quality score; add manuscript content and rerun analysis. "
+            if insufficient_content else ""
+        ) + f"Rule-based evidence checks against the {journal.get('template_name', journal_id or 'selected')} profile; not a peer review.",
     }
 
 
@@ -499,6 +513,8 @@ def generate_improvements(document_id: str, analysis: dict | None = None, focus:
             "suggested": item["suggested_action"],
             "reason": item["explanation"],
             "action_type": "recommendation",
+            "replacement": None,
+            "can_apply": False,
         })
     return {
         "document_id": document_id,
@@ -560,10 +576,15 @@ def apply_approved_changes(analysis: dict | None, approved_changes: list[dict]) 
             skipped.append({**change, "applied": False, "reason": "Change was not accepted by the user."})
             continue
         original = _normalize_text(change.get("original") or "")
-        suggested = _normalize_text(
-            change.get("suggested") or change.get("suggestion") or change.get("suggested_action") or ""
-        )
-        if not original or not suggested or original == suggested or original.startswith("No source sentence found"):
+        if not original or original.startswith("No source sentence found"):
+            skipped.append({**change, "applied": False, "reason": "No editable source sentence found for this suggestion."})
+            continue
+        replacement = _normalize_text(change.get("replacement") or "")
+        if change.get("action_type") != "replace_text" or not replacement:
+            skipped.append({**change, "applied": False, "reason": "Advisory suggestions do not contain a validated replacement."})
+            continue
+        suggested = replacement
+        if not suggested or original == suggested:
             skipped.append({**change, "applied": False, "reason": "No editable source sentence found for this suggestion."})
             continue
         targets = _locate_all_text_targets(document, original)
@@ -618,19 +639,22 @@ def generate_journal_match(document_id: str, analysis: dict | None = None, journ
     abstract_words = len(str(document.get("abstract") or "").split())
 
     def profile_metrics(candidate: dict) -> dict:
-        scope_score, topics, gaps = _match_score_for_topics(manuscript_text, candidate)
+        scope_score, topics, gaps, scope_status = _match_score_for_topics(document, candidate)
         required = set(candidate.get("required_sections") or [])
         missing_sections = sorted(required - section_types)
         word_limit = candidate.get("word_limit")
         abstract_limit = (candidate.get("abstract_formatting") or {}).get("max_words")
         keyword_rules = candidate.get("keyword_rules") or {}
-        formatting_checks = [
-            (not required or not missing_sections),
-            (not word_limit or word_count <= word_limit),
-            (not abstract_limit or abstract_words <= abstract_limit),
-            (not keyword_rules.get("required") or bool(document.get("keywords"))),
-        ]
-        formatting_score = sum(formatting_checks) / len(formatting_checks)
+        formatting_checks = []
+        if required:
+            formatting_checks.append(not missing_sections)
+        if word_limit:
+            formatting_checks.append(bool(word_count) and word_count <= word_limit)
+        if abstract_limit:
+            formatting_checks.append(bool(abstract_words) and abstract_words <= abstract_limit)
+        if keyword_rules.get("required"):
+            formatting_checks.append(bool(document.get("keywords")))
+        formatting_score = round(100 * sum(formatting_checks) / len(formatting_checks)) if formatting_checks else None
         expected_article = str(candidate.get("article_type") or "").strip().lower()
         article_match = None
         if article_type and expected_article:
@@ -639,10 +663,16 @@ def generate_journal_match(document_id: str, analysis: dict | None = None, journ
                 or article_type.lower() in expected_article
                 or expected_article in article_type.lower()
             )
-        article_score = 1.0 if article_match is not False else 0.0
-        suitability = round(
-            (scope_score * 0.65) + (formatting_score * 0.25) + (article_score * 0.10),
-            4,
+        components = []
+        if scope_score is not None:
+            components.append((scope_score, 0.65))
+        if formatting_score is not None:
+            components.append((formatting_score / 100, 0.25))
+        if article_match is not None:
+            components.append((1.0 if article_match else 0.0, 0.10))
+        suitability = (
+            round(sum(value * weight for value, weight in components) / sum(weight for _, weight in components), 4)
+            if components and scope_status == "evaluated" else None
         )
         requirements = [f"Required section not detected: {name}." for name in missing_sections]
         if word_limit and word_count > word_limit:
@@ -653,6 +683,8 @@ def generate_journal_match(document_id: str, analysis: dict | None = None, journ
             requirements.append("The selected profile requires keywords, but none were detected.")
         if article_match is False:
             requirements.append(f"Article type '{article_type}' does not match the configured '{expected_article}' profile.")
+        if scope_status != "evaluated":
+            requirements.append("Scope suitability is unknown because manuscript content or configured journal scope is insufficient.")
         if gaps:
             scope_gaps = gaps
         elif not manuscript_text.strip():
@@ -666,40 +698,57 @@ def generate_journal_match(document_id: str, analysis: dict | None = None, journ
             "missing_sections": missing_sections,
             "requirements": requirements,
             "article_type_match": article_match,
-            "formatting_score": round(formatting_score * 100),
+            "formatting_score": formatting_score,
             "suitability_score": suitability,
+            "scope_status": scope_status,
         }
 
     selected = profile_metrics(journal)
     score = selected["scope_score"]
     relevant_topics = selected["topics"]
     scope_gaps = selected["scope_gaps"]
-    explanation = (
-        f"Scope match is {round(score * 100)}% based on manuscript-topic overlap. "
-        f"Journal suitability also considers required sections, configured length/keyword rules, and article type. "
-        f"{journal.get('profile_basis', 'Profile basis not specified')}"
-    )
-    ranked_journals = []
+    if selected["scope_status"] == "evaluated":
+        evidence = ", ".join(relevant_topics[:5]) or "no matching configured scope phrases"
+        explanation = (
+            f"Scope evidence score is {round(score * 100)}%, based on matched configured topics: {evidence}. "
+            "Suitability uses only configured scope, requirements, and supplied article-type evidence; it is not an acceptance probability. "
+            f"{journal.get('profile_basis', 'Profile basis not specified')}"
+        )
+    else:
+        explanation = f"{scope_gaps[0]} Profile basis: {journal.get('profile_basis', 'Not specified')}"
+    ranked_by_id = {}
     for candidate in get_available_journals():
+        candidate_id = candidate.get("journal_id")
+        if not candidate_id or candidate_id in ranked_by_id:
+            continue
         metrics = profile_metrics(candidate)
-        ranked_journals.append({
-            "journal_id": candidate["journal_id"],
+        ranked_by_id[candidate_id] = {
+            "journal_id": candidate_id,
             "journal_name": candidate["journal_name"],
             "score": metrics["suitability_score"],
             "suitability_score": metrics["suitability_score"],
             "scope_match": metrics["scope_score"],
             "formatting_compatibility": metrics["formatting_score"],
             "article_type_match": metrics["article_type_match"],
+            "match_status": metrics["scope_status"],
             "missing_requirements": metrics["requirements"],
             "relevant_topics": metrics["topics"],
-        })
-    ranked_journals.sort(key=lambda item: (item["score"], item["scope_match"]), reverse=True)
+        }
+    ranked_journals = list(ranked_by_id.values())
+    ranked_journals.sort(
+        key=lambda item: (
+            item["score"] if item["score"] is not None else -1,
+            item["scope_match"] if item["scope_match"] is not None else -1,
+        ),
+        reverse=True,
+    )
     return {
         "document_id": document_id,
         "journal_id": journal_key,
         "score": score,
         "scope_match": score,
         "topic_match": score,
+        "match_status": selected["scope_status"],
         "article_type": article_type or "not provided",
         "article_type_match": selected["article_type_match"],
         "formatting_compatibility": selected["formatting_score"],
@@ -709,7 +758,7 @@ def generate_journal_match(document_id: str, analysis: dict | None = None, journ
         "relevant_topics": relevant_topics,
         "scope_gaps": scope_gaps,
         "explanation": explanation,
-        "suitable": selected["suitability_score"] >= 0.45,
+        "suitable": selected["suitability_score"] is not None and selected["suitability_score"] >= 0.45,
         "acceptance_guarantee": False,
     }
 
@@ -762,7 +811,7 @@ def generate_readiness_report(document_id: str, analysis: dict | None = None, qu
         "technical_contribution": contribution_score,
         "novelty_framing": novelty["novelty_score"],
         "writing_quality": writing_score,
-        "journal_suitability": round(journal_match["suitability_score"] * 100),
+        "journal_suitability": round(journal_match["suitability_score"] * 100) if journal_match["suitability_score"] is not None else 0,
         "formatting_compliance": formatting_score,
     }
     overall = round(sum(scores.values()) / len(scores))

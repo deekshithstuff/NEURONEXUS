@@ -10,7 +10,7 @@ import re
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['\u2019\-][A-Za-z0-9]+)*")
 _WHITESPACE_RE = re.compile(r"\s+")
-_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"\u201c'])")
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"\u201c'])|(?<=\S)\n+")
 _DOUBLE_QUOTE_RE = re.compile(r"[\"\u201c]([^\"\u201d]{2,}?)[\"\u201d]")
 _CITATION_RE = re.compile(
     r"\[(\d+(?:\s*[-,]\s*\d+)*)\]"

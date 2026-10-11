@@ -1,4 +1,5 @@
 export function formatPercent(value, digits = 1) {
+  if (value === null) return 'Unavailable'
   const numeric = Number(value)
   if (!Number.isFinite(numeric)) return '—'
   return `${(numeric * 100).toFixed(digits)}%`

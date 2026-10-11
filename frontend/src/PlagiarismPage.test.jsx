@@ -5,6 +5,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 vi.mock('./services/api', () => ({
   researchApi: {
     getPlagiarismStatus: vi.fn(),
+    getPlagiarismReferences: vi.fn(),
+    uploadPlagiarismReference: vi.fn(),
+    deletePlagiarismReference: vi.fn(),
+    reindexPlagiarismReference: vi.fn(),
     startPlagiarismScan: vi.fn(),
     getPlagiarismScan: vi.fn(),
     downloadPlagiarismReport: vi.fn(),
@@ -22,6 +26,7 @@ const STATUS = {
     { id: 'lexical', available: true },
     { id: 'semantic', available: false },
   ],
+  reference_index: { indexed_count: 0, last_indexed_at: null, failure_count: 0 },
 }
 
 const REPORT = {
@@ -83,6 +88,7 @@ const manuscript = { document_id: 'DOC-1', title: 'Test manuscript' }
 beforeEach(() => {
   vi.clearAllMocks()
   researchApi.getPlagiarismStatus.mockResolvedValue(STATUS)
+  researchApi.getPlagiarismReferences.mockResolvedValue({ documents: [] })
 })
 
 afterEach(cleanup)
@@ -139,5 +145,20 @@ describe('PlagiarismPage', () => {
   it('prompts to upload when no manuscript is loaded', async () => {
     render(<PlagiarismPage document={{}} setActive={() => {}} />)
     expect(await screen.findByText(/no manuscript loaded/i)).toBeTruthy()
+  })
+
+  it('keeps corpus management available without a manuscript and uploads reference PDFs', async () => {
+    const reference = { id: 'REF-1', filename: 'paper.pdf', title: 'Paper', page_count: 3, status: 'indexed', authors: ['A. Author'] }
+    researchApi.uploadPlagiarismReference.mockResolvedValue(reference)
+    researchApi.getPlagiarismReferences.mockResolvedValue({ documents: [reference] })
+    researchApi.getPlagiarismStatus.mockResolvedValue({ ...STATUS, reference_index: { indexed_count: 1, last_indexed_at: 'today', failure_count: 0 } })
+
+    render(<PlagiarismPage document={{}} setActive={() => {}} />)
+    expect(await screen.findByText(/manage comparison PDFs/i)).toBeTruthy()
+    const input = screen.getByLabelText(/add reference PDF/i)
+    fireEvent.change(input, { target: { files: [new File(['pdf'], 'paper.pdf', { type: 'application/pdf' })] } })
+
+    await waitFor(() => expect(researchApi.uploadPlagiarismReference).toHaveBeenCalled())
+    expect(await screen.findByText('paper.pdf · 3 page(s)')).toBeTruthy()
   })
 })

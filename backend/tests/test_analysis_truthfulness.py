@@ -3,6 +3,7 @@ from uuid import uuid4
 from backend.ai_service import analyze_completeness, analyze_contribution, analyze_methodology, analyze_novelty, analyze_writing, apply_approved_changes, generate_improvements, generate_journal_match, generate_readiness_report
 from backend.citation.validator import validate_citations
 from backend.ai_provider import LocalMockProvider, ai_provider_status, get_ai_provider
+from backend.formatting.formatter import apply_formatting
 from backend.main import app
 from backend.journal.database import load_journal_rules
 from fastapi.testclient import TestClient
@@ -98,7 +99,7 @@ def test_writing_and_improvement_findings_use_actual_text():
     assert all(item["original"] == source_sentence or item["original"].startswith("No source sentence") for item in improvements["suggestions"])
 
 
-def test_accepted_improvement_applies_literal_replacement():
+def test_advisory_improvement_does_not_replace_source_with_instruction_text():
     source_sentence = "The proposed system performs a lot of heavy inference tasks."
     analysis = {
         "sections": [
@@ -120,12 +121,23 @@ def test_accepted_improvement_applies_literal_replacement():
     approved = [{**editable[0], "accepted": True}]
     modified, applied, skipped = apply_approved_changes(analysis, approved)
 
-    assert len(applied) == 1
-    assert applied[0]["original"] == source_sentence
-    assert applied[0]["suggested"] == rewritten
-    assert modified["sections"][0]["content"] == rewritten
-    assert modified["paragraphs"][0] == rewritten
+    assert not applied
+    assert skipped[0]["reason"] == "Advisory suggestions do not contain a validated replacement."
+    assert modified["sections"][0]["content"] == source_sentence
+    assert modified["paragraphs"][0] == source_sentence
     assert analysis["paragraphs"][0] == source_sentence, "input analysis must not be mutated"
+
+    explicit = [{
+        "id": "explicit-replacement",
+        "action_type": "replace_text",
+        "original": source_sentence,
+        "replacement": "The proposed system performs substantial inference tasks.",
+        "accepted": True,
+    }]
+    replaced, applied_replacement, skipped_replacement = apply_approved_changes(analysis, explicit)
+    assert len(applied_replacement) == 1
+    assert replaced["sections"][0]["content"] == "The proposed system performs substantial inference tasks."
+    assert not skipped_replacement
 
     denied, applied_denied, skipped_denied = apply_approved_changes(analysis, [{**editable[0], "accepted": False}])
     assert not applied_denied
@@ -219,6 +231,44 @@ def test_unrelated_manuscript_does_not_receive_a_positive_journal_match():
     assert result["formatting_compatibility"] < 100
 
 
+def test_journal_ranking_uses_specific_scope_evidence_and_rejects_empty_input():
+    iot = {
+        "title": "Low-power IoT soil moisture sensor with ESP32",
+        "abstract": "We evaluate a wireless embedded sensing system for smart irrigation using soil moisture sensors and edge machine learning.",
+        "keywords": ["IoT", "embedded systems", "sensors", "irrigation", "machine learning"],
+        "sections": [{"type": "methodology", "heading": "Methodology", "content": "The ESP32 sensor network measures soil moisture."}],
+    }
+    crop_ml = {
+        "title": "Crop disease recognition using deep learning",
+        "abstract": "A computer vision model classifies crop leaf disease images for precision agriculture.",
+        "keywords": ["crop disease", "computer vision", "agriculture", "deep learning"],
+        "sections": [{"type": "results", "heading": "Results", "content": "The model was evaluated on labeled crop imagery."}],
+    }
+
+    iot_match = generate_journal_match("DOC-IOT", iot, "ieee")
+    crop_match = generate_journal_match("DOC-CROP", crop_ml, "nature")
+    iot_ranked = {item["journal_id"]: item for item in iot_match["ranked_journals"]}
+    crop_ranked = {item["journal_id"]: item for item in crop_match["ranked_journals"]}
+
+    assert iot_ranked["ieee"]["suitability_score"] > iot_ranked["acm_journal"]["suitability_score"]
+    assert crop_ranked["nature"]["suitability_score"] > crop_ranked["acm_journal"]["suitability_score"]
+    assert iot_match["scope_match"] != crop_match["scope_match"]
+    assert iot_ranked["ieee"]["relevant_topics"]
+    assert iot_match == generate_journal_match("DOC-IOT", iot, "ieee")
+
+    empty = {"title": "A study"}
+    empty_match = generate_journal_match("DOC-EMPTY", empty, "nature")
+    assert empty_match["match_status"] == "insufficient_content"
+    assert empty_match["scope_match"] is None
+    assert empty_match["suitability_score"] is None
+
+    from backend.journal.matcher import match_journal
+
+    upload_match = match_journal(empty)
+    assert upload_match["journal_id"] is None
+    assert upload_match["match_status"] == "insufficient_content"
+
+
 def test_completeness_reports_configured_word_limits():
     from backend.journal.rules import get_journal_rules
 
@@ -240,4 +290,34 @@ def test_completeness_reports_configured_word_limits():
     assert result["word_limit_exceeded"] is True
     assert result["abstract_word_count"] == abstract_limit + 1
     assert result["abstract_limit_exceeded"] is True
+
+
+def test_formatting_warning_ids_deduplicate_and_reconcile_resolved_captions():
+    from backend.journal.rules import get_journal_rules
+
+    rules = get_journal_rules("nature")
+    analysis = {
+        "document_id": "DOC-WARNINGS",
+        "title": "Formatting test",
+        "figures": [
+            {"id": "figure-1", "caption": ""},
+            {"id": "figure-1", "caption": ""},
+            {"id": "figure-2", "caption": ""},
+        ],
+    }
+    first = apply_formatting(analysis, rules)
+    repeated = apply_formatting(analysis, rules)
+    caption_warnings = [item for item in first.warning_details if item["rule_id"] == "figure_caption_missing"]
+
+    assert [item["id"] for item in first.warning_details] == [item["id"] for item in repeated.warning_details]
+    assert len(caption_warnings) == 3
+    assert len({item["id"] for item in caption_warnings}) == 3
+    assert all(item["status"] == "verified_from_parsed_content" for item in caption_warnings)
+
+    analysis["figures"][0]["caption"] = "Sensor layout"
+    resolved = apply_formatting(analysis, rules)
+    resolved_ids = {item["id"] for item in resolved.warning_details}
+    assert caption_warnings[0]["id"] not in resolved_ids
+    assert caption_warnings[1]["id"] in resolved_ids
+    assert caption_warnings[2]["id"] in resolved_ids
 from uuid import uuid4

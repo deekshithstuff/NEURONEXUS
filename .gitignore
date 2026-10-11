@@ -6,6 +6,7 @@ venv/
 node_modules/
 frontend/dist/
 backend/data/uploads/
+backend/data/reference_corpus/
 backend/data/*.sqlite3
 backend/outputs/
 .env
