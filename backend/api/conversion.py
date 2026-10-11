@@ -12,9 +12,9 @@ router = APIRouter(prefix="/api", dependencies=[Depends(get_current_user)])
 
 
 class ConversionRequest(BaseModel):
-    journal_ids: list[str] = Field(min_length=1)
-    article_type: str | None = None
-    approved_changes: list[dict] = Field(default_factory=list)
+    journal_ids: list[str] = Field(min_length=1, max_length=10)
+    article_type: str | None = Field(default=None, max_length=80)
+    approved_changes: list[dict] = Field(default_factory=list, max_length=100)
 
 
 def _status_for(message: str) -> int:
@@ -62,6 +62,20 @@ async def get_conversion(job_id: str, user: dict = Depends(get_current_user)):
         return service.get_job(job_id, user)
     except ConversionError as exc:
         raise HTTPException(status_code=_status_for(str(exc)), detail=str(exc)) from exc
+
+
+@router.post("/conversions/{job_id}/retry")
+async def retry_conversion(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    user: dict = Depends(get_current_user),
+):
+    try:
+        job = service.retry_job(job_id, user)
+    except ConversionError as exc:
+        raise HTTPException(status_code=_status_for(str(exc)), detail=str(exc)) from exc
+    background_tasks.add_task(service.run_conversion, job_id)
+    return job
 
 
 @router.get("/conversions/{job_id}/download/{file_format}")

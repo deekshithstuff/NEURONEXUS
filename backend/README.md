@@ -43,6 +43,13 @@ python -m uvicorn backend.main:app --reload --port 8000
 - GET /api/documents/{document_id}/download/pdf
 - GET /api/documents/{document_id}/download/report
 - GET /api/documents/{document_id}/download/zip
+- POST /api/documents/{document_id}/conversions — start independent jobs for selected journal IDs
+- GET /api/documents/{document_id}/conversions — list per-journal job states
+- GET /api/conversions/{job_id} — retrieve status and compliance summary
+- POST /api/conversions/{job_id}/retry — retry a failed job
+- GET /api/conversions/{job_id}/download/{docx|pdf|compliance_json|compliance_pdf}
+
+Conversion profiles and inherited base rules live in `backend/journal/profiles.json`. Add venue-specific values only when supported by a cited, dated official guideline; otherwise use `null` for unknown limits and keep the profile marked unverified. The current profiles are generic guidance, and citation-style transformation, exact page counts, and faithful PDF layout are not supported. Conversion jobs currently use FastAPI background tasks backed by SQLite; deployments that need crash-surviving work queues should replace this with a durable task broker.
 
 ## Notes
 

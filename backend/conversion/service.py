@@ -9,7 +9,9 @@ change application, and the shared compliance engine.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,7 @@ from backend.journal.rules import get_journal_rules
 from backend.security import get_accessible_document
 
 CONVERSION_ROOT = OUTPUT_DIR / "conversions"
+logger = logging.getLogger(__name__)
 
 
 class ConversionError(ValueError):
@@ -37,6 +40,12 @@ def _now() -> str:
 
 
 def _public_job(row) -> dict[str, Any]:
+    result = json.loads(row["result_json"]) if row["result_json"] else None
+    if result and isinstance(result.get("outputs"), dict):
+        result["outputs"] = {
+            name: bool(path)
+            for name, path in result["outputs"].items()
+        }
     return {
         "job_id": row["id"],
         "document_id": row["document_id"],
@@ -46,7 +55,7 @@ def _public_job(row) -> dict[str, Any]:
         "error": row["error"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
-        "result": json.loads(row["result_json"]) if row["result_json"] else None,
+        "result": result,
     }
 
 
@@ -132,10 +141,14 @@ def run_conversion(job_id: str) -> None:
             skipped_changes=skipped_changes,
         )
         _update_job(job_id, status="completed", result=result)
-    except (ConversionError, ValueError) as exc:
+    except ConversionError as exc:
         _update_job(job_id, status="failed", error=str(exc) or "The conversion failed.")
+    except ValueError:
+        logger.exception("Conversion job %s failed validation", job_id)
+        _update_job(job_id, status="failed", error="The conversion could not process this manuscript.")
     except Exception as exc:  # pragma: no cover - defensive
-        _update_job(job_id, status="failed", error=f"The conversion failed: {exc}")
+        logger.exception("Conversion job %s failed", job_id)
+        _update_job(job_id, status="failed", error="Conversion failed unexpectedly; retry or review the source document.")
 
 
 def _convert_one(
@@ -150,7 +163,7 @@ def _convert_one(
     skipped_changes: list[dict] | None = None,
 ) -> dict[str, Any]:
     journal_id = journal["journal_id"]
-    output_dir = CONVERSION_ROOT / document_id / journal_id
+    output_dir = CONVERSION_ROOT / document_id / job_id
     output_dir.mkdir(parents=True, exist_ok=True)
     docx_path = output_dir / "manuscript.docx"
     pdf_path = output_dir / "manuscript.pdf"
@@ -173,14 +186,24 @@ def _convert_one(
         )
 
     DOCXGenerator().generate(analysis, docx_path, journal, source_path=source_for_generation)
+    if not docx_path.is_file() or docx_path.stat().st_size == 0:
+        raise ConversionError("DOCX generation did not produce an output file.")
+    with zipfile.ZipFile(docx_path) as archive:
+        if archive.testzip() is not None:
+            raise ConversionError("Generated DOCX failed archive validation.")
     pdf_rendering = {
         "status": "limited_text_rendering",
         "message": "PDF text is extracted from the formatted DOCX; office layout and visual fidelity are not guaranteed because no office renderer is configured.",
     }
     try:
         PDFGenerator().generate(docx_path, pdf_path)
+        if not pdf_path.is_file() or pdf_path.stat().st_size == 0:
+            raise ConversionError("PDF generation produced no output.")
     except Exception as exc:  # pragma: no cover - defensive
-        pdf_rendering = {"status": "failed", "message": f"PDF generation failed: {exc}"}
+        logger.exception("PDF rendering failed for conversion job %s", job_id)
+        pdf_path.unlink(missing_ok=True)
+        pdf_rendering = {"status": "failed", "message": "PDF rendering failed; the DOCX and compliance report remain available."}
+        warnings.append(pdf_rendering["message"])
 
     page_count = (analysis.get("metadata") or {}).get("page_count")
     compliance = build_compliance_report(
@@ -210,8 +233,12 @@ def _convert_one(
     report_lines.append("This is a rule-based check; rules marked manual_review require human verification.")
     try:
         PDFGenerator().generate_readiness_report(compliance_pdf, "\n".join(report_lines))
+        if not compliance_pdf.is_file() or compliance_pdf.stat().st_size == 0:
+            raise ConversionError("Compliance PDF generation produced no output.")
     except Exception:  # pragma: no cover - defensive
-        pass
+        logger.exception("Compliance PDF generation failed for conversion job %s", job_id)
+        compliance_pdf.unlink(missing_ok=True)
+        warnings.append("Compliance PDF could not be rendered; the JSON compliance report remains available.")
 
     outputs = {
         "docx": str(docx_path),
@@ -225,7 +252,7 @@ def _convert_one(
                 conn.execute(
                     "INSERT OR REPLACE INTO conversion_outputs(id, job_id, document_id, journal_id, format, path) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (f"{document_id}-{journal_id}-{file_format}", job_id, document_id, journal_id, file_format, file_path),
+                    (f"{job_id}-{file_format}", job_id, document_id, journal_id, file_format, file_path),
                 )
     return {
         "document_id": document_id,
@@ -277,6 +304,24 @@ def list_jobs(document_id: str, user: dict) -> dict[str, Any]:
     return {"document_id": document_id, "jobs": [_public_job(row) for row in rows]}
 
 
+def retry_job(job_id: str, user: dict) -> dict[str, Any]:
+    row = fetch_one("SELECT * FROM conversion_jobs WHERE id = ?", (job_id,))
+    if row is None:
+        raise ConversionError("Conversion job not found.")
+    get_accessible_document(row["document_id"], user, capability="convert")
+    if row["status"] != "failed":
+        raise ConversionError("Only failed conversion jobs can be retried.")
+    with connection() as conn:
+        conn.execute("DELETE FROM conversion_outputs WHERE job_id = ?", (job_id,))
+        conn.execute(
+            "UPDATE conversion_jobs SET status = 'queued', error = NULL, result_json = NULL, "
+            "updated_at = ? WHERE id = ? AND status = 'failed'",
+            (_now(), job_id),
+        )
+    retried = fetch_one("SELECT * FROM conversion_jobs WHERE id = ?", (job_id,))
+    return _public_job(retried)
+
+
 def job_output_path(job_id: str, user: dict, file_format: str) -> tuple[str, Path, str]:
     row = fetch_one("SELECT * FROM conversion_jobs WHERE id = ?", (job_id,))
     if row is None:
@@ -284,11 +329,13 @@ def job_output_path(job_id: str, user: dict, file_format: str) -> tuple[str, Pat
     get_accessible_document(row["document_id"], user, capability="read")
     if row["status"] != "completed" or not row["result_json"]:
         raise ConversionError("The conversion output is not ready yet.")
-    result = json.loads(row["result_json"])
-    path = (result.get("outputs") or {}).get(file_format)
-    if not path:
+    output = fetch_one(
+        "SELECT path FROM conversion_outputs WHERE job_id = ? AND format = ?",
+        (job_id, file_format),
+    )
+    if output is None:
         raise ConversionError("That output is not available for this conversion.")
-    target = Path(path)
+    target = Path(output["path"])
     if not target.exists():
         raise ConversionError("The conversion output file is missing.")
     media = {
@@ -298,7 +345,7 @@ def job_output_path(job_id: str, user: dict, file_format: str) -> tuple[str, Pat
         "compliance_pdf": "application/pdf",
     }.get(file_format, "application/octet-stream")
     extension = target.suffix.lstrip(".") or "bin"
-    filename = f"{result.get('journal_id', 'journal')}_{file_format}.{extension}"
+    filename = f"{row['journal_id']}_{file_format}.{extension}"
     return filename, target, media
 
 

@@ -121,6 +121,50 @@ def test_conversion_creates_trackable_jobs():
         detail = api.get(f"/api/conversions/{job['job_id']}")
         assert detail.status_code == 200, detail.text
         assert detail.json()["status"] in {"queued", "running", "completed", "failed"}
+        if detail.json()["status"] == "completed":
+            result = detail.json()["result"]
+            assert result["journal_id"] == job["journal_id"]
+            assert result["outputs"]["docx"] is True
+            assert str(Path.cwd()) not in str(result)
+            download = api.get(f"/api/conversions/{job['job_id']}/download/docx")
+            assert download.status_code == 200
+            assert download.content[:2] == b"PK"
+
+
+def test_conversion_retry_is_limited_to_failed_jobs():
+    api, _ = new_client()
+    document_id = analyze_document(api)
+    created = api.post(
+        f"/api/documents/{document_id}/conversions",
+        json={"journal_ids": ["ieee"]},
+    )
+    assert created.status_code == 200, created.text
+    job_id = created.json()["jobs"][0]["job_id"]
+
+    retry = api.post(f"/api/conversions/{job_id}/retry")
+    assert retry.status_code == 400
+    assert retry.json()["detail"] == "Only failed conversion jobs can be retried."
+
+
+def test_failed_conversion_can_be_retried_without_new_job():
+    from backend.database import connection
+
+    api, _ = new_client()
+    document_id = analyze_document(api)
+    response = api.post(
+        f"/api/documents/{document_id}/conversions",
+        json={"journal_ids": ["ieee"]},
+    )
+    job_id = response.json()["jobs"][0]["job_id"]
+    with connection() as conn:
+        conn.execute("UPDATE conversion_jobs SET status = 'failed', error = 'temporary error' WHERE id = ?", (job_id,))
+
+    retried = api.post(f"/api/conversions/{job_id}/retry")
+    assert retried.status_code == 200, retried.text
+    assert retried.json()["job_id"] == job_id
+    completed = api.get(f"/api/conversions/{job_id}")
+    assert completed.status_code == 200
+    assert completed.json()["status"] == "completed"
 
 
 def test_conversion_rejects_unknown_journal():

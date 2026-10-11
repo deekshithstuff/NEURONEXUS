@@ -293,34 +293,43 @@ export function AnalyticsPage({ document, setActive }) {
 /* ------------------------------------------------------------------ */
 export function ConversionPage({ document, setActive }) {
   const [journalList, setJournalList] = useState([])
+  const [articleTypes, setArticleTypes] = useState([])
+  const [articleType, setArticleType] = useState('original_research')
   const [selected, setSelected] = useState([])
   const [jobs, setJobs] = useState([])
+  const [search, setSearch] = useState('')
   const [error, setError] = useState('')
   const [isStarting, setIsStarting] = useState(false)
 
   useEffect(() => {
-    researchApi.getJournals().then(({ journals }) => setJournalList(journals || [])).catch(() => {})
-    if (document?.document_id) refresh()
+    researchApi.getJournals()
+      .then(({ journals }) => setJournalList(journals || []))
+      .catch((requestError) => setError(requestError.message || 'Could not load journal profiles.'))
+    researchApi.getArticleTypes()
+      .then(({ article_types: types }) => setArticleTypes(types || []))
+      .catch((requestError) => setError(requestError.message || 'Could not load article types.'))
+    if (!document?.document_id) return undefined
+    const refreshJobs = () => researchApi.getConversions(document.document_id)
+      .then(({ jobs: currentJobs }) => setJobs(currentJobs || []))
+      .catch((requestError) => setError(requestError.message || 'Could not refresh conversion status.'))
+    refreshJobs()
+    const timer = window.setInterval(refreshJobs, 1500)
+    return () => window.clearInterval(timer)
   }, [document?.document_id])
 
-  const refresh = async () => {
-    if (!document?.document_id) return
-    try {
-      setJobs((await researchApi.getConversions(document.document_id)).jobs || [])
-    } catch {
-      setJobs([])
-    }
-  }
+  const visibleJournals = useMemo(() => journalList.filter((journal) => (
+    `${journal.journal_name || ''} ${journal.publisher || ''} ${journal.journal_id || ''}`
+      .toLowerCase().includes(search.trim().toLowerCase())
+  )), [journalList, search])
 
   const start = async () => {
     if (!document?.document_id || selected.length === 0) return
     setError('')
     setIsStarting(true)
     try {
-      const result = await researchApi.startConversion(document.document_id, { journal_ids: selected })
+      const result = await researchApi.startConversion(document.document_id, { journal_ids: selected, article_type: articleType })
       setJobs([...(result.jobs || []), ...jobs])
       setSelected([])
-      setTimeout(refresh, 800)
     } catch (requestError) {
       setError(requestError.message || 'Conversion could not be started.')
     } finally {
@@ -341,6 +350,16 @@ export function ConversionPage({ document, setActive }) {
     }
   }
 
+  const retryJob = async (jobId) => {
+    setError('')
+    try {
+      const job = await researchApi.retryConversion(jobId)
+      setJobs((current) => current.map((item) => item.job_id === jobId ? job : item))
+    } catch (requestError) {
+      setError(requestError.message || 'Could not retry this conversion.')
+    }
+  }
+
   if (!document?.document_id) return <NoAnalysis setActive={setActive} />
   return (
     <>
@@ -349,6 +368,7 @@ export function ConversionPage({ document, setActive }) {
           <p className="kicker">MULTI-JOURNAL CONVERSION</p>
           <h1>Convert for journals<span className="period">.</span></h1>
           <p className="subtitle">Generate journal-targeted exports. Conversions are advisory reconstructions and do not overwrite your source manuscript.</p>
+          <p className="supporting-text">{document.title || document.filename || document.document_id} · {document.filename || 'Analyzed manuscript'} · Ready for conversion</p>
         </div>
         <button type="button" className="primary-button" onClick={start} disabled={isStarting || selected.length === 0}>
           {isStarting ? <Loader2 size={16} className="spin" /> : <FileDown size={16} />}
@@ -358,8 +378,13 @@ export function ConversionPage({ document, setActive }) {
       {error && <div className="status-box error-box" role="alert">{error}</div>}
       <section className="panel">
         <div className="panel-heading"><div><p className="kicker">TARGETS</p><h2>Select journals</h2></div></div>
+        <label className="muted-label" htmlFor="conversion-article-type">Article type</label>
+        <select id="conversion-article-type" className="filter-select" value={articleType} onChange={(event) => setArticleType(event.target.value)}>
+          {articleTypes.map((type) => <option key={type.id} value={type.id}>{type.label}</option>)}
+        </select>
+        <input className="text-input" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search journals or publishers" aria-label="Search journals" />
         <div className="chip-row">
-          {journalList.map((journal) => {
+          {visibleJournals.map((journal) => {
             const active = selected.includes(journal.journal_id)
             return (
               <button key={journal.journal_id} type="button"
@@ -370,6 +395,21 @@ export function ConversionPage({ document, setActive }) {
             )
           })}
         </div>
+        {selected.length > 0 && (
+          <div className="data-table">
+            <h3>Requirements comparison</h3>
+            {journalList.filter((journal) => selected.includes(journal.journal_id)).map((journal) => (
+              <div className="data-row" key={journal.journal_id}>
+                <span className="data-main">{journal.journal_name || journal.journal_id}
+                  <small>{journal.publisher || 'Publisher unspecified'} · {journal.template_name || 'Generic profile'}</small>
+                  <small>{journal.page_size || 'Page size unknown'} · {journal.columns || 1} column(s) · {journal.font || 'Font unspecified'} {journal.font_size || ''} pt</small>
+                  <small>{journal.word_limit ? `Word limit: ${journal.word_limit}` : 'Word limit unknown'} · Citation style: {journal.citation_style || 'unknown'}</small>
+                  <small>{journal.guideline?.verification_status || 'unverified'} profile; check the venue's current instructions.</small>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
       <section className="panel">
         <div className="panel-heading"><div><p className="kicker">JOBS</p><h2>Conversion history</h2></div></div>
@@ -386,11 +426,20 @@ export function ConversionPage({ document, setActive }) {
                     <span className="button-row small-actions">
                       <button type="button" className="outline-button" onClick={() => downloadJob(job.job_id, 'docx')}>DOCX</button>
                       <button type="button" className="outline-button" onClick={() => downloadJob(job.job_id, 'pdf')}>PDF</button>
+                      <button type="button" className="outline-button" onClick={() => downloadJob(job.job_id, 'compliance_json')}>Report</button>
+                    </span>
+                  ) : job.status === 'failed' ? (
+                    <span className="button-row small-actions">
+                      <span className="supporting-text">{job.error || 'Conversion failed.'}</span>
+                      <button type="button" className="outline-button" onClick={() => retryJob(job.job_id)}>Retry</button>
                     </span>
                   ) : (
-                    <span className="supporting-text">{job.error || 'processing'}</span>
+                    <span className="supporting-text">{job.status === 'running' ? 'Formatting and validating…' : 'Waiting to start…'}</span>
                   )}
                 </span>
+                {job.status === 'completed' && job.result?.compliance_summary && (
+                  <span className="supporting-text">Compliance: {job.result.compliance_summary.overall_status}; {job.result.warnings?.length || 0} formatting warning(s)</span>
+                )}
               </div>
             ))}
           </div>

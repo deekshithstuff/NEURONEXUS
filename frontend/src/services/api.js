@@ -144,6 +144,7 @@ export const researchApi = {
   getConversions: (id) => request(`/api/documents/${id}/conversions`),
   startConversion: (id, payload) => request(`/api/documents/${id}/conversions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),
   getConversionJob: (jobId) => request(`/api/conversions/${jobId}`),
+  retryConversion: (jobId) => request(`/api/conversions/${jobId}/retry`, { method: 'POST' }),
   downloadConversion: (jobId, format) => request(`/api/conversions/${jobId}/download/${format}`, { responseType: 'blob' }),
   getCollaborators: (id) => request(`/api/documents/${id}/collaborators`),
   inviteCollaborator: (id, payload) => request(`/api/documents/${id}/collaborators`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }),

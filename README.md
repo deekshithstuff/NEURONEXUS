@@ -162,6 +162,13 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/documents/$docume
 2. Backend **parses** the manuscript and runs **citation checks**.
 3. **AI modules** populate Quality, Novelty, Methodology, Journal fit, Improvements, and Report tabs.
 4. On **Export**, click **Generate submission package**, then download **DOCX** and **PDF**.
+5. For independent venue outputs, open **Conversion**, select one or more journal profiles, compare the displayed rules, and start conversion. Each job provides its own DOCX, PDF (when rendering succeeds), and compliance report. Failed jobs can be retried.
+
+### Multi-journal conversion
+
+Conversion uses the parsed analysis of an uploaded manuscript; upload and analyze a DOCX first, or open an existing manuscript. Jobs are stored per user/document and per attempt under the backend output directory. API routes are `POST /api/documents/{document_id}/conversions`, `GET /api/documents/{document_id}/conversions`, `GET /api/conversions/{job_id}`, `POST /api/conversions/{job_id}/retry`, and `GET /api/conversions/{job_id}/download/{docx|pdf|compliance_json|compliance_pdf}`. Requests use `{"journal_ids":["ieee","acm_journal"]}` with optional `article_type` and explicitly approved content changes.
+
+Journal profiles are maintained in `backend/journal/profiles.json`; inherit shared defaults with `extends` and override only verified venue-specific requirements. The included IEEE, ACM, and Springer entries are generic profiles, not official journal templates; their rules are unverified until a guideline source and verification date are recorded. Missing limits should remain `null`. Conversion applies supported page setup and text styling, preserves source DOCX assets, validates structural requirements, and reports unsupported formatting/citation transformations. It does not guarantee submission compliance or acceptance, and PDF output uses limited text rendering rather than a full office layout engine.
 
 ## Tests
 
